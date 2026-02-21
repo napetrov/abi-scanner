@@ -1,0 +1,58 @@
+# abi_tracker/suppressions/onedal.txt
+# Suppressions for oneDAL ABI tracking
+# Ignore internal MKL, TBB, and compiler-generated symbols
+
+[suppress_function]
+# MKL internal functions
+symbol_name_regexp = ^mkl_.*
+symbol_name_regexp = ^XERBLA.*
+symbol_name_regexp = ^cdecl_xerbla$
+symbol_name_regexp = ^xerbla.*
+
+# MKL VSL (Vector Statistics Library) internals
+symbol_name_regexp = ^mkl_vsl_.*
+symbol_name_regexp = ^VIRNG.*
+symbol_name_regexp = ^virng.*
+
+# Intel compiler internals
+symbol_name_regexp = ^__intel_.*
+
+# TBB internals (detail namespace)
+name_regexp = ^tbb::detail::.*
+
+# DAAL internal namespaces
+name_regexp = ^daal::.*::internal::.*
+name_regexp = ^daal::services::internal::.*
+
+# oneDAL internal namespaces
+name_regexp = ^oneapi::dal::.*::detail::.*
+name_regexp = ^oneapi::dal::detail::.*
+name_regexp = ^oneapi::dal::backend::.*
+
+# Compiler-generated symbols
+symbol_name_regexp = ^_Z.*internal.*
+symbol_name_regexp = ^_ZN.*internal.*
+
+[suppress_type]
+# Internal types
+name_regexp = .*::internal::.*
+name_regexp = .*::detail::.*
+
+[suppress_variable]
+# MKL internal data tables
+symbol_name_regexp = ^mkl_.*
+symbol_name_regexp = ^_vsl_.*
+symbol_name_regexp = ^i_.*  # MKL allocator symbols
+symbol_name_regexp = ^uNiederr.*
+symbol_name_regexp = ^uSobol.*
+symbol_name_regexp = ^iNiederr.*
+symbol_name_regexp = ^iSobol.*
+symbol_name_regexp = ^MKL_.*
+
+# TBB vtables and internal vars
+symbol_name_regexp = ^_ZTVN3tbb.*
+symbol_name_regexp = ^_ZTIN3tbb.*
+symbol_name_regexp = ^_ZTSN3tbb.*
+
+# Compiler-generated guard variables
+symbol_name_regexp = ^_ZGV.*

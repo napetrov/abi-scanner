@@ -1,0 +1,71 @@
+# abi_tracker/package_configs/onedal.yaml
+# Package structure configuration for oneDAL across different sources
+
+library: onedal
+primary_lib: libonedal.so.3
+
+sources:
+  apt:
+    base_url: https://apt.repos.intel.com/oneapi/pool/main
+    packages:
+      runtime:
+        pattern: intel-oneapi-dal-{version}-{version}.{build}_amd64.deb
+        contains: [lib]
+      devel:
+        pattern: intel-oneapi-dal-devel-{version}-{version}.{build}_amd64.deb
+        contains: [include, lib_static]
+    
+    # Extract paths after dpkg -x
+    paths:
+      lib: opt/intel/oneapi/dal/{version}/lib
+      include: opt/intel/oneapi/dal/{version}/include
+  
+  conda:
+    base_url: https://conda.anaconda.org/intel
+    channel: intel
+    packages:
+      all:
+        pattern: onedal-{version}-*.tar.bz2
+        contains: [lib, include]
+    
+    paths:
+      lib: lib
+      include: include
+  
+  pypi:
+    # scikit-learn-intelex wheels contain onedal .so
+    package: scikit-learn-intelex
+    packages:
+      wheel:
+        pattern: scikit_learn_intelex-{version}-py310-none-manylinux_2_28_x86_64.whl
+        contains: [lib_embedded]
+    
+    paths:
+      lib: onedal/.libs  # embedded in wheel
+
+# Public API namespaces (auto-detected from headers, can override here)
+public_namespaces:
+  - oneapi::dal::kmeans
+  - oneapi::dal::knn
+  - oneapi::dal::svm
+  - oneapi::dal::pca
+  - oneapi::dal::linear_regression
+  - oneapi::dal::decision_forest
+  - oneapi::dal::table
+  - oneapi::dal::array
+
+# Private/internal patterns (suppressed from breaking change detection)
+private_patterns:
+  namespace:
+    - ".*::detail::.*"
+    - ".*::backend::.*"
+    - ".*::internal::.*"
+    - ".*::v[0-9]+::.*"  # versioned namespaces
+  
+  symbol:
+    - "^mkl_.*"
+    - "^_.*"
+    - "^tbb::detail::.*"
+    - "^daal::.*::internal::.*"
+    - "^__intel_.*"
+    - "^cdecl_.*"

@@ -1,0 +1,48 @@
+# Workspace artifacts (generated locally)
+workspace/
+baselines/
+reports/
+public_api/
+metadata/
+*.abi
+*.json
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Downloaded packages
+*.deb
+*.tar.bz2
+*.tar.gz
+*.whl
+*.conda
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# micromamba/conda
+micromamba_root/
+conda_env/
+env/
+
+# Logs
+*.log
