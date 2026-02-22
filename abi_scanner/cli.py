@@ -142,10 +142,22 @@ def cmd_compare(args):
             print(f"New: {new_spec}", file=sys.stderr)
         
         # TODO: Implement actual comparison logic
-        print(f"Comparing {old_spec} → {new_spec}")
-        print("Status: ✅ COMPATIBLE (exit code: 0)")
-        print("(Implementation in progress)")
+        output = (
+            f"Comparing {old_spec} → {new_spec}\n"
+            f"Status: ✅ COMPATIBLE (exit code: 0)\n"
+            f"(Implementation in progress)\n"
+        )
         
+        # Handle output destination
+        if args.output:
+            args.output.write_text(output)
+            if args.verbose:
+                print(f"Output written to {args.output}", file=sys.stderr)
+        else:
+            print(output, end='')
+        
+        # TODO: Return proper exit codes after comparison logic implemented
+        # Exit codes: 0=no change, 4=additions, 8=changes, 12=breaking
         return 0
         
     except ValueError as e:
@@ -173,16 +185,28 @@ def cmd_compatible(args):
 
 def cmd_validate(args):
     """Execute validate command."""
-    print(f"Validating SemVer compliance for {args.spec}")
-    print("(Implementation in progress)")
-    return 0
+    try:
+        # Parse spec (may be package-only, no version)
+        # TODO: Implement spec parser for channel:package format
+        print(f"Validating SemVer compliance for {args.spec}")
+        print("(Implementation in progress)")
+        return 0
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
 
 def cmd_list(args):
     """Execute list command."""
-    print(f"Listing versions for {args.spec}")
-    print("(Implementation in progress)")
-    return 0
+    try:
+        # Parse spec (package-only format)
+        # TODO: Implement spec parser for channel:package format
+        print(f"Listing versions for {args.spec}")
+        print("(Implementation in progress)")
+        return 0
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
 
 def main():
