@@ -48,8 +48,8 @@ micromamba --version
 ### 3. Clone this repository
 
 ```bash
-git clone https://github.com/napetrov/oneapi-abi-tracker.git
-cd oneapi-abi-tracker
+git clone https://github.com/napetrov/abi-scanner.git
+cd abi-scanner
 ```
 
 ### 4. Set up workspace

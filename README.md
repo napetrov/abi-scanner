@@ -1,194 +1,163 @@
-# oneDAL ABI Tracker
+# ABI Scanner
 
-Automated ABI (Application Binary Interface) compatibility tracking system for Intel oneDAL library across releases.
+Automated ABI (Application Binary Interface) compatibility tracking for C/C++ libraries.
 
-## 🎯 Goal
+**⚠️ Prevents binary compatibility breaks before they reach users.**
 
-Validate semantic versioning compliance for oneDAL releases by detecting ABI-breaking changes that violate SemVer:
-- **Patch releases** (X.Y.Z → X.Y.Z+1) must have zero ABI changes
-- **Minor releases** (X.Y.0 → X.Y+1.0) may only add compatible symbols
-- **Major releases** (X.0.0 → X+1.0.0) may break ABI
+## What is this?
 
-**Purpose:**
-- Catch breaking changes before they reach users
-- Prevent accidental ABI breaks in minor/patch releases
-- Maintain binary compatibility across oneDAL versions
-- Provide historical ABI change analysis
+ABI Scanner automatically detects when library updates break binary compatibility (ABI), helping maintainers validate Semantic Versioning compliance and prevent user-facing breakage.
 
-## 📊 Coverage
+**Example problem it solves:**
+```
+Library v2025.1.0: void process(int x);
+Library v2025.2.0: void process(double x);  // ❌ ABI BREAK in minor version!
 
-- **35 versions analyzed** (2021-2025)
-- **34 sequential comparisons** completed
-- **Sources:** conda-forge, Intel conda channel, Intel APT repository
+User's app compiled with v2025.1.0 crashes when linking v2025.2.0
+```
+
+ABI Scanner detects this **before release** in CI/CD.
+
+## 📖 Documentation
+
+- **[GOALS.md](GOALS.md)** — Project goals, tasks, roadmap, success criteria
+- **[docs/INSTALLATION.md](docs/INSTALLATION.md)** — Installation & usage guide
+- **[docs/onedal_package_distribution.md](docs/onedal_package_distribution.md)** — Package naming reference
 
 ## 🚀 Quick Start
 
-### Prerequisites
-
 ```bash
-# Install libabigail (ABI analysis tools)
-sudo apt install abigail-tools  # Ubuntu/Debian
-# or
-brew install libabigail  # macOS
-
-# Install micromamba (conda package manager)
+# Install dependencies
+sudo apt install abigail-tools
 curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
-```
 
-### Basic Usage
+# Clone repository
+git clone https://github.com/napetrov/abi-scanner.git
+cd abi-scanner
 
-**1. Analyze a single version:**
-```bash
+# Analyze a library version
+export MAMBA_ROOT_PREFIX=$(pwd)/workspace/micromamba_root
 bash scripts/process_single_version.sh dal 2025.10.0
-```
 
-**2. Compare two versions:**
-```bash
+# Compare two versions
 abidiff --suppressions config/suppressions/onedal.txt \
-    baselines/dal/dal_2025.9.0.abi \
-    baselines/dal/dal_2025.10.0.abi
+    workspace/baselines/dal/dal_2025.9.0.abi \
+    workspace/baselines/dal/dal_2025.10.0.abi
+
+# Exit code:
+#   0 = No changes (✅ safe for patch)
+#   4 = Additions only (✅ safe for minor)
+#  8/12 = Breaking changes (❌ requires major version)
 ```
 
-**3. Full historical analysis:**
-```bash
-python3 scripts/compare_all_history.py
+## 📊 Current Status
+
+**Phase 1 Complete:** Core infrastructure ✅
+- [x] 35 versions of oneDAL analyzed (2021-2025)
+- [x] Multi-source package support (conda-forge, Intel conda, APT)
+- [x] libabigail integration with symbol filtering
+- [x] Sequential comparison pipeline
+
+**Phase 2 In Progress:** Validation & CI/CD integration
+- [ ] Full comparison report
+- [ ] SemVer compliance validation
+- [ ] GitHub Actions workflows
+- [ ] JSON output format
+
+See [GOALS.md](GOALS.md) for complete roadmap.
+
+## 📁 Repository Structure
+
 ```
-
-### Exit Codes
-
-| Code | Meaning | SemVer Compliance |
-|------|---------|-------------------|
-| 0 | No ABI changes | ✅ Patch/Minor OK |
-| 4 | Compatible additions only | ✅ Minor OK, ⚠️ Patch fails |
-| 8 | Incompatible changes | ❌ Requires major version |
-| 12 | Breaking changes (symbols removed) | ❌ Requires major version |
-
-## 📁 Project Structure
-
-```
-oneapi-abi-tracker/
-├── scripts/                          # Automation scripts
-│   ├── process_single_version.sh     # Download→analyze→cleanup for one version
-│   ├── compare_all_history.py        # Full sequential comparison
-│   ├── parse_headers.py              # Extract public API from C++ headers
+abi-scanner/
+├── GOALS.md                     # ⭐ Project goals & roadmap
+├── scripts/                     # Automation scripts
+│   ├── process_single_version.sh
+│   ├── compare_all_history.py
 │   └── ...
 ├── config/
-│   ├── suppressions/onedal.txt       # Filter internal symbols (MKL, TBB, etc.)
-│   └── package_configs/onedal.yaml   # Package metadata (APT/conda/PyPI)
-├── docs/
-│   └── onedal_package_distribution.md # Package naming reference
-└── README.md                          # This file
+│   ├── suppressions/            # Filter internal symbols
+│   └── package_configs/         # Package metadata
+└── docs/                        # Guides & references
 ```
 
-**Note:** ABI baselines and reports are **not** included in this repository (287MB total). They are generated locally during analysis.
+**Note:** ABI baselines and reports are generated locally (not in repo).
 
-## 🛠️ Development Roadmap
+## 🎯 Supported Libraries
 
-### Phase 1: Core Infrastructure ✅ (Complete)
-- [x] Multi-source package downloading (conda-forge, Intel conda, Intel APT)
-- [x] ABI baseline generation using libabigail
-- [x] Sequential version comparison pipeline
-- [x] Internal symbol suppression (MKL, TBB, compiler internals)
-- [x] Public vs private API categorization from headers
+### Currently Supported
+- **Intel oneDAL** (Data Analytics Library) — 35 versions
 
-### Phase 2: Validation & Analysis (Current)
-- [ ] Full comparison report for all 35 versions
-- [ ] Semantic versioning compliance validation
-- [ ] Breaking change categorization (public vs private API)
-- [ ] Regression detection (re-introduced removed symbols)
-- [ ] JSON output format for CI/CD integration
+### Planned Support
+- Intel oneTBB (Threading Building Blocks)
+- Intel oneMKL (Math Kernel Library)
+- Intel oneDNN (Deep Neural Network Library)
 
-### Phase 3: Automation
-- [ ] GitHub Actions workflow for CI/CD
-- [ ] Automated detection of new releases
-- [ ] PR checks: fail on breaking changes in minor/patch
-- [ ] Weekly monitoring cron job
-- [ ] Slack/email notifications for new releases
+### Adding New Library
+See [GOALS.md](GOALS.md#phase-4-multi-library-support-may-2026) for extension plan.
 
-### Phase 4: Extensions
-- [ ] Extend to other oneAPI libraries:
-  - oneTBB (Threading Building Blocks)
-  - oneMKL (Math Kernel Library)
-  - oneDNN (Deep Neural Network Library)
-- [ ] Cross-library compatibility matrix
-- [ ] Historical trend analysis dashboard
-- [ ] API stability score per package
+## 🔍 Key Features
 
-### Phase 5: Integration
-- [ ] Integrate into oneDAL upstream CI
-- [ ] Public ABI compatibility database (GitHub Pages)
-- [ ] conda-forge feedstock ABI checks
-- [ ] Documentation generator from ABI diffs
+### Multi-Source Package Support
+- **conda/mamba** — primary source (conda-forge, Intel channel)
+- **APT** — Intel repositories (Ubuntu/Debian packages)
+- **PyPI** — Python wheels with embedded native libraries
 
-## 🔍 Key Findings
+Uses official CLI tools (micromamba, apt) — never manual repo parsing.
 
-From completed analysis of oneDAL 2021-2025:
+### Symbol Filtering
+Suppresses internal symbols to focus on public API:
+- MKL internals (`mkl_*`, `vsl_*`)
+- TBB internals (`tbb::detail::*`)
+- Compiler-generated symbols
 
-1. **SemVer Violation Found:** 2025.1.0 → 2025.2.0 removed move assignment operators (`array<T>::operator=(array&&)`) — should have been 2026.0.0
+See `config/suppressions/` for customization.
 
-2. **Major Refactoring:** 2025.0 → 2025.4 removed 786 symbols (743 internal MKL/TBB, 43 public)
-
-3. **Stable Period:** 2025.4 → 2025.10 shows no ABI changes (all exit code 0)
-
-4. **Pattern:** Early 2021 releases had frequent breaking changes as API stabilized
-
-## 📦 Package Naming Reference
-
-**CRITICAL:** oneDAL has different package names across channels:
-
-| Channel | Runtime Package | Headers Package | Devel Package |
-|---------|----------------|-----------------|---------------|
-| conda-forge / Intel conda | `dal` | `dal-include` | `dal-devel` |
-| Intel APT | `intel-oneapi-dal-YYYY.X` | (in `-devel`) | `intel-oneapi-dal-devel-YYYY.X` |
-| PyPI | `scikit-learn-intelex` (embeds oneDAL) | (embedded) | N/A |
-
-**Always use official CLI tools:**
-- `micromamba search -c conda-forge dal` (NOT curl to repodata.json)
-- `apt-cache search intel-oneapi-dal` (NOT wget to pool/)
-- `pip search scikit-learn-intelex`
-
-See `docs/onedal_package_distribution.md` for complete reference.
+### CI/CD Integration (Planned)
+```yaml
+# .github/workflows/abi-check.yml
+- name: ABI Check
+  run: |
+    bash scripts/compare_new_version.sh
+    if [ $? -gt 4 ]; then
+      echo "ERROR: Breaking ABI changes in minor release!"
+      exit 1
+    fi
+```
 
 ## 🤝 Contributing
 
-This is an experimental tool developed for Intel oneDAL team. Contributions welcome:
+**All changes must go through Pull Requests** (including maintainers).
 
-1. **Bug reports:** Open issue with reproduction steps
-2. **Feature requests:** Describe use case and expected behavior
-3. **Pull requests:** Include tests and documentation
+Requirements:
+- Fork the repository
+- Create feature branch
+- Add tests if applicable
+- Update documentation
+- Submit PR for review
 
-### Testing Locally
-
-```bash
-# Process a test version
-bash scripts/process_single_version.sh dal 2025.0.0
-
-# Verify baseline created
-ls workspace/baselines/dal/dal_2025.0.0.abi
-
-# Compare with next version
-bash scripts/process_single_version.sh dal 2025.0.1
-abidiff --suppressions config/suppressions/onedal.txt \
-    workspace/baselines/dal/dal_2025.0.0.abi \
-    workspace/baselines/dal/dal_2025.0.1.abi
-```
+See [GOALS.md#contact--governance](GOALS.md#-contact--governance) for contribution policy.
 
 ## 📄 License
 
-MIT License (or Intel internal — TBD)
-
-## 🔗 Related Projects
-
-- [libabigail](https://sourceware.org/libabigail/) — ABI analysis framework
-- [oneapi-src/oneDAL](https://github.com/oneapi-src/oneDAL) — oneDAL upstream
-- [conda-forge/dal-feedstock](https://github.com/conda-forge/dal-feedstock) — conda-forge packaging
+MIT License (see LICENSE file)
 
 ## 📧 Contact
 
 - **Maintainer:** Nikolay Petrov (Intel)
-- **Issues:** GitHub Issues
+- **Issues:** [GitHub Issues](https://github.com/napetrov/abi-scanner/issues)
 - **Discussions:** Intel tasks Telegram group
+
+## 🔗 Related Projects
+
+- [libabigail](https://sourceware.org/libabigail/) — ABI analysis framework
+- [abi-compliance-checker](https://github.com/lvc/abi-compliance-checker) — Alternative tool
+- [Intel oneAPI](https://www.intel.com/content/www/us/en/developer/tools/oneapi/overview.html) — Libraries ecosystem
 
 ---
 
-**Status:** Experimental | Active Development | Intel Internal
+**Status:** Active Development | Experimental  
+**First Library:** Intel oneDAL (35 versions analyzed)  
+**Next Target:** oneTBB support (Q2 2026)
+
+**⭐ Star this repo** if you find it useful!
