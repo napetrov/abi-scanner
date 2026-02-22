@@ -9,7 +9,6 @@ Examples:
     local:/path/to/libonedal.so
 """
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -18,7 +17,9 @@ from typing import Optional
 @dataclass
 class PackageSpec:
     """Represents a package specification."""
-    
+
+    SUPPORTED_CHANNELS = {"conda-forge", "intel", "apt", "local"}
+
     channel: str
     package: str
     version: Optional[str] = None
@@ -48,12 +49,25 @@ class PackageSpec:
         
         channel, rest = spec.split(":", 1)
         channel = channel.strip()
-        
+
+        if channel not in cls.SUPPORTED_CHANNELS:
+            raise ValueError(
+                f"Unsupported channel '{channel}'. "
+                f"Supported channels: {', '.join(sorted(cls.SUPPORTED_CHANNELS))}"
+            )
+
         # Special case: local file path
         if channel == "local":
-            path = Path(rest.strip())
+            local_path = rest.strip()
+            if not local_path:
+                raise ValueError("Local spec requires a file path: local:/path/to/file.so")
+
+            path = Path(local_path).expanduser().resolve()
             if not path.exists():
                 raise ValueError(f"Local file not found: {path}")
+            if not path.is_file():
+                raise ValueError(f"Local path is not a file: {path}")
+
             return cls(
                 channel="local",
                 package=path.stem,  # Use filename as package name

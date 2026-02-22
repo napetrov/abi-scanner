@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
 """Setup script for abi-scanner."""
 
-from setuptools import setup, find_packages
+import re
 from pathlib import Path
 
+from setuptools import find_packages, setup
+
 # Read README
-readme_file = Path(__file__).parent / "README.md"
+root = Path(__file__).parent
+readme_file = root / "README.md"
 long_description = readme_file.read_text() if readme_file.exists() else ""
+
+# Single-source version from package
+version_file = root / "abi_scanner" / "__init__.py"
+version_match = re.search(
+    r"^__version__\s*=\s*[\"']([^\"']+)[\"']",
+    version_file.read_text(),
+    re.MULTILINE,
+)
+if not version_match:
+    raise RuntimeError("Unable to find __version__ in abi_scanner/__init__.py")
+package_version = version_match.group(1)
 
 setup(
     name="abi-scanner",
-    version="0.1.0-dev",
+    version=package_version,
     description="Universal ABI compatibility checker for C/C++ libraries",
     long_description=long_description,
     long_description_content_type="text/markdown",

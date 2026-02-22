@@ -1,5 +1,6 @@
 """Unit tests for package_spec module."""
 
+import tempfile
 import unittest
 from pathlib import Path
 from abi_scanner.package_spec import PackageSpec, validate_spec
@@ -74,6 +75,32 @@ class TestPackageSpec(unittest.TestCase):
         """Test validate_spec with invalid input."""
         self.assertFalse(validate_spec("invalid"))
         self.assertFalse(validate_spec("conda-forge:dal"))
+
+    def test_local_path(self):
+        """Test local:/path parsing."""
+        with tempfile.NamedTemporaryFile(suffix=".so") as tmp:
+            spec = PackageSpec.parse(f"local:{tmp.name}")
+            self.assertEqual(spec.channel, "local")
+            self.assertEqual(spec.path, Path(tmp.name).resolve())
+            self.assertEqual(spec.package, Path(tmp.name).stem)
+            self.assertIsNone(spec.version)
+            self.assertEqual(str(spec), f"local:{Path(tmp.name).resolve()}")
+
+    def test_local_path_missing(self):
+        """Test local path validation when file does not exist."""
+        self.assertFalse(validate_spec("local:/definitely/not/found/lib.so"))
+
+    def test_local_path_directory(self):
+        """Test local path must be a file, not a directory."""
+        with self.assertRaises(ValueError) as cm:
+            PackageSpec.parse("local:.")
+        self.assertIn("not a file", str(cm.exception))
+
+    def test_unsupported_channel(self):
+        """Test unsupported channel is rejected."""
+        with self.assertRaises(ValueError) as cm:
+            PackageSpec.parse("foo:dal=2025.9.0")
+        self.assertIn("Unsupported channel", str(cm.exception))
 
 
 if __name__ == "__main__":

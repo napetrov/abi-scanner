@@ -20,7 +20,7 @@ cd /workspace/oneapi-abi-tracker
 ```
 
 **Output:**
-```
+```text
 Comparing conda-forge:dal=2025.9.0 → conda-forge:dal=2025.10.0
 Status: ✅ COMPATIBLE (exit code: 0)
 (Implementation in progress)
