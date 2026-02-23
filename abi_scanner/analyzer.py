@@ -6,10 +6,57 @@ This module provides ABI baseline generation and comparison functionality.
 import json
 import re
 import subprocess
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Set
+
+
+def demangle_symbol(mangled: str) -> str:
+    """Demangle C++ symbol using c++filt."""
+    try:
+        result = subprocess.run(
+            ["c++filt", mangled],
+            capture_output=True,
+            text=True,
+            timeout=1
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return mangled
+
+
+def extract_namespace(demangled: str) -> str:
+    """Extract primary namespace from demangled symbol.
+    
+    Examples:
+        'oneapi::dal::v2::array<int>::operator=' -> 'oneapi::dal'
+        'daal::algorithms::covariance::Batch::compute' -> 'daal::algorithms'
+        'std::__detail::__variant::foo' -> 'std'
+    """
+    # Remove template args, function args, return types
+    simplified = re.sub(r'<[^>]*>', '', demangled)
+    simplified = re.sub(r'\([^)]*\)', '', simplified)
+    
+    # Extract namespace parts (before last ::)
+    parts = simplified.split('::')
+    if len(parts) <= 1:
+        return "(global)"
+    
+    # Return first 2 levels (e.g., oneapi::dal, daal::algorithms)
+    # Skip detail/internal/backend parts
+    ns_parts = []
+    for part in parts[:-1]:  # Exclude last part (class/function name)
+        if part in ('detail', 'internal', 'backend', 'impl', 'v1', 'v2', 'interface1', 'interface2'):
+            break
+        ns_parts.append(part)
+        if len(ns_parts) >= 2:
+            break
+    
+    return '::'.join(ns_parts) if ns_parts else "(global)"
 
 
 class ABIVerdict(Enum):
@@ -57,6 +104,93 @@ class ABIComparisonResult:
     stdout: str = ""
     stderr: str = ""
     
+    def group_by_namespace(self, symbols: List[str]) -> Dict[str, List[str]]:
+        """Group symbols by namespace."""
+        grouped = defaultdict(list)
+        for sym in symbols:
+            demangled = demangle_symbol(sym)
+            ns = extract_namespace(demangled)
+            grouped[ns].append(demangled)
+        return dict(grouped)
+    
+    def format_summary(self, show_rc: bool = False) -> str:
+        """Format human-readable summary."""
+        lines = []
+        
+        # Verdict
+        verdict_map = {
+            ABIVerdict.NO_CHANGE: "✅ NO_CHANGE",
+            ABIVerdict.COMPATIBLE: "✅ COMPATIBLE",
+            ABIVerdict.INCOMPATIBLE: "⚠️  INCOMPATIBLE",
+            ABIVerdict.BREAKING: "❌ BREAKING",
+            ABIVerdict.ERROR: "❌ ERROR"
+        }
+        verdict_str = verdict_map.get(self.verdict, f"?({self.verdict.name})")
+        
+        if show_rc:
+            verdict_str += f" (rc={self.exit_code})"
+        
+        lines.append(verdict_str)
+        
+        # Counters
+        if self.functions_removed or self.functions_added or self.functions_changed:
+            parts = []
+            if self.functions_removed:
+                parts.append(f"-{self.functions_removed}")
+            if self.functions_added:
+                parts.append(f"+{self.functions_added}")
+            if self.functions_changed:
+                parts.append(f"~{self.functions_changed}")
+            lines.append(f"Functions: {' '.join(parts)}")
+        
+        if self.variables_removed or self.variables_added or self.variables_changed:
+            parts = []
+            if self.variables_removed:
+                parts.append(f"-{self.variables_removed}")
+            if self.variables_added:
+                parts.append(f"+{self.variables_added}")
+            if self.variables_changed:
+                parts.append(f"~{self.variables_changed}")
+            lines.append(f"Variables: {' '.join(parts)}")
+        
+        return " | ".join(lines)
+    
+    def format_details(self, max_per_ns: int = 5) -> str:
+        """Format detailed symbol changes grouped by namespace."""
+        lines = []
+        
+        if self.public_removed:
+            lines.append("\n📉 Removed (public API):")
+            grouped = self.group_by_namespace(self.public_removed)
+            for ns, syms in sorted(grouped.items()):
+                lines.append(f"  {ns}:")
+                for sym in syms[:max_per_ns]:
+                    lines.append(f"    - {sym}")
+                if len(syms) > max_per_ns:
+                    lines.append(f"    ... and {len(syms) - max_per_ns} more")
+        
+        if self.public_added:
+            lines.append("\n📈 Added (public API):")
+            grouped = self.group_by_namespace(self.public_added)
+            for ns, syms in sorted(grouped.items()):
+                lines.append(f"  {ns}:")
+                for sym in syms[:max_per_ns]:
+                    lines.append(f"    + {sym}")
+                if len(syms) > max_per_ns:
+                    lines.append(f"    ... and {len(syms) - max_per_ns} more")
+        
+        if self.public_changed:
+            lines.append("\n🔄 Changed (public API):")
+            grouped = self.group_by_namespace(self.public_changed)
+            for ns, syms in sorted(grouped.items()):
+                lines.append(f"  {ns}:")
+                for sym in syms[:max_per_ns]:
+                    lines.append(f"    ~ {sym}")
+                if len(syms) > max_per_ns:
+                    lines.append(f"    ... and {len(syms) - max_per_ns} more")
+        
+        return "\n".join(lines) if lines else ""
+    
     def to_dict(self) -> dict:
         """Export as JSON-serializable dict"""
         return {
@@ -88,12 +222,9 @@ class ABIComparisonResult:
                 }
             },
             "details": {
-                "public_added": self.public_added[:10],
-                "public_removed": self.public_removed[:10],
-                "public_changed": self.public_changed[:10],
-                "private_added": self.private_added[:10],
-                "private_removed": self.private_removed[:10],
-                "private_changed": self.private_changed[:10],
+                "public_added_by_ns": self.group_by_namespace(self.public_added),
+                "public_removed_by_ns": self.group_by_namespace(self.public_removed),
+                "public_changed_by_ns": self.group_by_namespace(self.public_changed),
             }
         }
 
@@ -115,6 +246,13 @@ class PublicAPIFilter:
             r"_Z.*internal",
         ]
         self._compiled_patterns = [re.compile(p) for p in self.private_patterns]
+        
+        # Compile public namespace patterns with boundary matching
+        # to avoid false positives like "foo" matching "foobar::..."
+        self._public_ns_patterns = [
+            re.compile(rf"(?:^|::){re.escape(ns)}(?:$|::)")
+            for ns in self.public_namespaces
+        ]
     
     def is_public(self, symbol: str) -> bool:
         """Check if symbol belongs to public API"""
@@ -124,20 +262,40 @@ class PublicAPIFilter:
                 return False
         
         # If no public namespaces defined, assume public
-        if not self.public_namespaces:
+        if not self._public_ns_patterns:
             return True
         
-        # Check if symbol contains any public namespace
-        for ns in self.public_namespaces:
-            if ns in symbol:
+        # Check if symbol matches any public namespace (boundary-aware)
+        for pattern in self._public_ns_patterns:
+            if pattern.search(symbol):
                 return True
         
         return False
     
     @classmethod
     def from_json(cls, api_file: Path) -> "PublicAPIFilter":
-        """Load public API definition from JSON file"""
+        """Load public API definition from JSON file
+        
+        Args:
+            api_file: Path to public API JSON manifest
+            
+        Returns:
+            PublicAPIFilter instance
+            
+        Note:
+            If file doesn't exist, returns filter with no public namespaces
+            (treats all as public except private patterns). This is intentional
+            for optional public API filtering, but callers should validate
+            file existence if strict filtering is required.
+        """
         if not api_file.exists():
+            import warnings
+            warnings.warn(
+                f"Public API manifest not found: {api_file}. "
+                f"Defaulting to 'all public' (except private patterns).",
+                UserWarning,
+                stacklevel=2
+            )
             return cls()
         
         with open(api_file) as f:
@@ -279,6 +437,21 @@ class ABIAnalyzer:
             result.functions_changed = int(func_match.group(2))
             result.functions_added = int(func_match.group(3))
         
+        # Also parse "X Added/Removed function symbols not referenced by debug info"
+        func_no_debug_added = re.search(
+            r"(\d+) Added function symbols not referenced by debug info",
+            output
+        )
+        if func_no_debug_added:
+            result.functions_added += int(func_no_debug_added.group(1))
+        
+        func_no_debug_removed = re.search(
+            r"(\d+) Removed function symbols not referenced by debug info",
+            output
+        )
+        if func_no_debug_removed:
+            result.functions_removed += int(func_no_debug_removed.group(1))
+        
         # Variables changes summary: X Removed, Y Changed, Z Added
         var_match = re.search(
             r"Variables changes summary: (\d+) Removed, (\d+) Changed, (\d+) Added",
@@ -288,6 +461,21 @@ class ABIAnalyzer:
             result.variables_removed = int(var_match.group(1))
             result.variables_changed = int(var_match.group(2))
             result.variables_added = int(var_match.group(3))
+        
+        # Also parse "X Added/Removed variable symbols not referenced by debug info"
+        var_no_debug_added = re.search(
+            r"(\d+) Added variable symbols? not referenced by debug info",
+            output
+        )
+        if var_no_debug_added:
+            result.variables_added += int(var_no_debug_added.group(1))
+        
+        var_no_debug_removed = re.search(
+            r"(\d+) Removed variable symbols? not referenced by debug info",
+            output
+        )
+        if var_no_debug_removed:
+            result.variables_removed += int(var_no_debug_removed.group(1))
     
     def _parse_changes(
         self,
@@ -301,14 +489,14 @@ class ABIAnalyzer:
         current_section = None
         
         for line in lines:
-            # Detect section headers
-            if "Removed function symbols" in line or "Removed variable symbols" in line:
+            # Detect section headers (including "not referenced by debug info" variants)
+            if ("Removed function symbols" in line or "Removed variable symbols" in line):
                 current_section = "removed"
                 continue
-            elif "Added function symbols" in line or "Added variable symbols" in line:
+            elif ("Added function symbols" in line or "Added variable symbols" in line):
                 current_section = "added"
                 continue
-            elif "Changed function symbols" in line or "Changed variable symbols" in line:
+            elif ("Changed function symbols" in line or "Changed variable symbols" in line):
                 current_section = "changed"
                 continue
             

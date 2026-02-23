@@ -25,6 +25,13 @@ def main() -> int:
     api_new_file = Path(sys.argv[4])
     suppressions = Path(sys.argv[5]) if len(sys.argv) > 5 else None
 
+    if not api_old_file.exists():
+        print(f"Public API JSON not found: {api_old_file}", file=sys.stderr)
+        return 1
+    if not api_new_file.exists():
+        print(f"Public API JSON not found: {api_new_file}", file=sys.stderr)
+        return 1
+
     analyzer = ABIAnalyzer(suppressions=suppressions)
     filter_old = PublicAPIFilter.from_json(api_old_file)
     filter_new = PublicAPIFilter.from_json(api_new_file)
