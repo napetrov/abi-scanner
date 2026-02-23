@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 
 from .package_spec import PackageSpec
+from .sources import create_source
 
 
 def create_parser():
@@ -140,10 +141,19 @@ def cmd_compare(args):
         if args.verbose:
             print(f"Old: {old_spec}", file=sys.stderr)
             print(f"New: {new_spec}", file=sys.stderr)
-        
-        # TODO: Implement actual comparison logic
+
+        # Create source adapters (Phase 2 foundation)
+        old_source = create_source(old_spec)
+        new_source = create_source(new_spec)
+
+        if args.verbose:
+            print(f"Old source adapter: {old_source.__class__.__name__}", file=sys.stderr)
+            print(f"New source adapter: {new_source.__class__.__name__}", file=sys.stderr)
+
+        # TODO: Implement actual download/extract/analyze pipeline
         output = (
             f"Comparing {old_spec} → {new_spec}\n"
+            f"Sources: {old_source.__class__.__name__} vs {new_source.__class__.__name__}\n"
             f"Status: ✅ COMPATIBLE (exit code: 0)\n"
             f"(Implementation in progress)\n"
         )
