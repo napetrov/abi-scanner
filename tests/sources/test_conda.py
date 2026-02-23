@@ -26,7 +26,7 @@ def test_conda_source_init_default(mock_subprocess):
     mock_subprocess.assert_not_called()
 
 
-def test_conda_source_init_custom_channel(mock_subprocess):
+def test_conda_source_init_custom_channel():
     """Test CondaSource with custom channel."""
     source = CondaSource(channel='intel')
     
@@ -71,6 +71,10 @@ def test_conda_source_download(mock_run, tmp_path):
     assert 'micromamba' in call_args
     assert 'download' in call_args
     assert 'test=1.0.0' in call_args
+    
+    # Verify downloaded file
+    assert result.exists()
+    assert result.name.startswith('test-1.0.0')
 
 
 @patch('abi_scanner.sources.conda.subprocess.run')

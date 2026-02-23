@@ -77,7 +77,7 @@ class CondaSource(PackageSource):
             ]
             
             print(f"Downloading {spec}...")
-            result = subprocess.run(
+            subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,

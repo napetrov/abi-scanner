@@ -1,12 +1,13 @@
 """Factory for creating source adapters from PackageSpec channel."""
 
 from .apt import AptSource
+from .base import PackageSource
 from .conda import CondaSource
 from .local import LocalSource
 from ..package_spec import PackageSpec
 
 
-def create_source(spec: PackageSpec):
+def create_source(spec: PackageSpec) -> PackageSource:
     """Create the appropriate PackageSource implementation for a PackageSpec.
 
     Mapping:

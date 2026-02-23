@@ -1,7 +1,7 @@
 """Base interface for package sources."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
@@ -15,14 +15,8 @@ class PackageMetadata:
     source: str
     download_path: Optional[Path] = None
     extract_path: Optional[Path] = None
-    libraries: List[Path] = None
-    headers: List[Path] = None
-    
-    def __post_init__(self):
-        if self.libraries is None:
-            self.libraries = []
-        if self.headers is None:
-            self.headers = []
+    libraries: List[Path] = field(default_factory=list)
+    headers: List[Path] = field(default_factory=list)
 
 
 class PackageSource(ABC):
@@ -120,11 +114,12 @@ class PackageSource(ABC):
             extract_dir = output_dir / 'extracted' / f"{package_name}-{version}"
             extract_dir.mkdir(parents=True, exist_ok=True)
             
-            self.extract(package_file, extract_dir)
-            metadata.extract_path = extract_dir
+            # extract() may return subdirectory (e.g., .conda returns pkg/)
+            actual_root = self.extract(package_file, extract_dir)
+            metadata.extract_path = actual_root or extract_dir
             
-            # Find libraries and headers
-            metadata.libraries = self.find_libraries(extract_dir, package_name)
-            metadata.headers = self.find_headers(extract_dir)
+            # Find libraries and headers in actual extraction root
+            metadata.libraries = self.find_libraries(metadata.extract_path, package_name)
+            metadata.headers = self.find_headers(metadata.extract_path)
         
         return metadata

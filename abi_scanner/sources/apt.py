@@ -4,8 +4,47 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional
 import urllib.request
+from urllib.parse import urlparse
 
 from .base import PackageSource
+
+
+def safe_extract_tar(tar, extract_dir: Path):
+    """Safely extract tar archive preventing path traversal (CVE-2007-4559).
+    
+    Args:
+        tar: tarfile.TarFile object
+        extract_dir: Destination directory
+        
+    Raises:
+        RuntimeError: If any member attempts path traversal or is unsafe
+    """
+    extract_dir = extract_dir.resolve()
+    
+    for member in tar.getmembers():
+        # Compute target path and resolve it
+        member_path = (extract_dir / member.name).resolve()
+        
+        # Check path traversal
+        if not str(member_path).startswith(str(extract_dir)):
+            raise RuntimeError(
+                f"Path traversal attempt detected: {member.name} "
+                f"would extract outside {extract_dir}"
+            )
+        
+        # Reject symlinks, hard links, device files
+        if member.issym() or member.islnk():
+            raise RuntimeError(
+                f"Unsafe tar member (symlink/hardlink): {member.name}"
+            )
+        if member.isdev() or member.ischr() or member.isblk():
+            raise RuntimeError(
+                f"Unsafe tar member (device file): {member.name}"
+            )
+        
+        # Extract regular files and directories only
+        if member.isfile() or member.isdir():
+            tar.extract(member, extract_dir)
 
 
 class AptSource(PackageSource):
@@ -50,6 +89,15 @@ class AptSource(PackageSource):
                 raise ValueError(
                     "base_url required when package_name is not a full URL"
                 )
+            
+            # Validate base_url scheme (prevent file://, ftp://, etc.)
+            parsed = urlparse(self.base_url)
+            if parsed.scheme not in ('http', 'https'):
+                raise ValueError(
+                    f"Invalid base_url scheme '{parsed.scheme}'. "
+                    f"Only http:// and https:// are supported."
+                )
+            
             # Construct filename (Intel pattern: intel-oneapi-{lib}-{version}_{version}.{build}_amd64.deb)
             # Simplified: assume build number is in version string
             filename = f"{package_name}_{version}_amd64.deb"
@@ -122,9 +170,9 @@ class AptSource(PackageSource):
             if not data_tar:
                 raise RuntimeError(f"No data.tar.* found in {package_file}")
             
-            # Extract data.tar.*
+            # Extract data.tar.* safely (prevent path traversal CVE-2007-4559)
             with tarfile.open(data_tar[0]) as tar:
-                tar.extractall(extract_dir)
+                safe_extract_tar(tar, extract_dir)
         
         return extract_dir
     

@@ -7,6 +7,49 @@ from typing import List
 from .base import PackageSource
 
 
+def safe_extract_tar(tar, extract_dir: Path):
+    """Safely extract tar archive preventing path traversal (CVE-2007-4559)."""
+    extract_dir = extract_dir.resolve()
+    
+    for member in tar.getmembers():
+        member_path = (extract_dir / member.name).resolve()
+        
+        # Check path traversal
+        if not str(member_path).startswith(str(extract_dir)):
+            raise RuntimeError(
+                f"Path traversal attempt: {member.name} outside {extract_dir}"
+            )
+        
+        # Reject symlinks, hard links, device files
+        if member.issym() or member.islnk() or member.isdev() or member.ischr() or member.isblk():
+            raise RuntimeError(f"Unsafe tar member: {member.name}")
+        
+        # Extract regular files and directories only
+        if member.isfile() or member.isdir():
+            tar.extract(member, extract_dir)
+
+
+def safe_extract_zip(zf, extract_dir: Path):
+    """Safely extract zip archive preventing path traversal."""
+    extract_dir = extract_dir.resolve()
+    
+    for name in zf.namelist():
+        member_path = (extract_dir / name).resolve()
+        
+        # Check path traversal
+        if not str(member_path).startswith(str(extract_dir)):
+            raise RuntimeError(
+                f"Path traversal attempt: {name} outside {extract_dir}"
+            )
+        
+        # Extract
+        if name.endswith('/'):
+            member_path.mkdir(parents=True, exist_ok=True)
+        else:
+            member_path.parent.mkdir(parents=True, exist_ok=True)
+            member_path.write_bytes(zf.read(name))
+
+
 class LocalSource(PackageSource):
     """Adapter for local package files or directories.
     
@@ -47,11 +90,9 @@ class LocalSource(PackageSource):
             # Already in the right place
             return output_file
         
-        if not output_file.exists():
-            print(f"Copying {source_path.name}...")
-            shutil.copy2(source_path, output_file)
-        else:
-            print(f"✓ {source_path.name} already in output directory")
+        # Overwrite stale file or copy new file
+        print(f"Copying {source_path.name}...")
+        shutil.copy2(source_path, output_file)
         
         return output_file
     
@@ -84,7 +125,7 @@ class LocalSource(PackageSource):
         elif suffix in ['.bz2', '.gz', '.xz'] or package_file.name.endswith('.tar.bz2'):
             import tarfile
             with tarfile.open(package_file) as tar:
-                tar.extractall(extract_dir)
+                safe_extract_tar(tar, extract_dir)
         
         elif suffix == '.conda':
             import subprocess
@@ -92,15 +133,18 @@ class LocalSource(PackageSource):
                 ['unzip', '-q', str(package_file), '-d', str(extract_dir)],
                 check=True
             )
-            # .conda format has pkg/ subdirectory
+            # .conda format has pkg/ subdirectory - validate it
             pkg_dir = extract_dir / 'pkg'
             if pkg_dir.exists():
+                pkg_dir = pkg_dir.resolve()
+                if not str(pkg_dir).startswith(str(extract_dir.resolve())):
+                    raise RuntimeError("Unsafe .conda package structure")
                 return pkg_dir
         
         elif suffix == '.zip':
             import zipfile
             with zipfile.ZipFile(package_file) as zf:
-                zf.extractall(extract_dir)
+                safe_extract_zip(zf, extract_dir)
         
         else:
             raise ValueError(f"Unsupported package format: {package_file.suffix}")
