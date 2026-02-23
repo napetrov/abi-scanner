@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .base import PackageSource
+from .utils import safe_extract_tar, safe_extract_zip
 
 
 class CondaSource(PackageSource):
@@ -41,7 +42,7 @@ class CondaSource(PackageSource):
             raise RuntimeError(
                 f"{self.executable} not found. "
                 f"Install it: https://mamba.readthedocs.io/en/latest/installation.html"
-            )
+            ) from None
     
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:
         """Download conda package.
@@ -107,21 +108,20 @@ class CondaSource(PackageSource):
         extract_dir.mkdir(parents=True, exist_ok=True)
         
         if package_file.suffix == '.conda':
-            # New .conda format (zip-based)
-            subprocess.run(
-                ['unzip', '-q', str(package_file), '-d', str(extract_dir)],
-                check=True
-            )
+            # New .conda format (zip-based) - extract safely
+            import zipfile
+            with zipfile.ZipFile(package_file) as zf:
+                safe_extract_zip(zf, extract_dir)
+            
             # Libraries are in pkg/ subdirectory
             pkg_dir = extract_dir / 'pkg'
             if pkg_dir.exists():
                 return pkg_dir
         else:
-            # Old .tar.bz2 format
-            subprocess.run(
-                ['tar', 'xjf', str(package_file), '-C', str(extract_dir)],
-                check=True
-            )
+            # Old .tar.bz2 format - extract safely
+            import tarfile
+            with tarfile.open(package_file) as tar:
+                safe_extract_tar(tar, extract_dir)
         
         return extract_dir
     

@@ -4,47 +4,11 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional
 import urllib.request
+import urllib.error
 from urllib.parse import urlparse
 
 from .base import PackageSource
-
-
-def safe_extract_tar(tar, extract_dir: Path):
-    """Safely extract tar archive preventing path traversal (CVE-2007-4559).
-    
-    Args:
-        tar: tarfile.TarFile object
-        extract_dir: Destination directory
-        
-    Raises:
-        RuntimeError: If any member attempts path traversal or is unsafe
-    """
-    extract_dir = extract_dir.resolve()
-    
-    for member in tar.getmembers():
-        # Compute target path and resolve it
-        member_path = (extract_dir / member.name).resolve()
-        
-        # Check path traversal
-        if not str(member_path).startswith(str(extract_dir)):
-            raise RuntimeError(
-                f"Path traversal attempt detected: {member.name} "
-                f"would extract outside {extract_dir}"
-            )
-        
-        # Reject symlinks, hard links, device files
-        if member.issym() or member.islnk():
-            raise RuntimeError(
-                f"Unsafe tar member (symlink/hardlink): {member.name}"
-            )
-        if member.isdev() or member.ischr() or member.isblk():
-            raise RuntimeError(
-                f"Unsafe tar member (device file): {member.name}"
-            )
-        
-        # Extract regular files and directories only
-        if member.isfile() or member.isdir():
-            tar.extract(member, extract_dir)
+from .utils import safe_extract_tar
 
 
 class AptSource(PackageSource):
@@ -115,8 +79,8 @@ class AptSource(PackageSource):
         try:
             urllib.request.urlretrieve(url, output_file)
             return output_file
-        except Exception as e:
-            raise RuntimeError(f"Failed to download {url}: {e}")
+        except (urllib.error.URLError, urllib.error.HTTPError) as e:
+            raise RuntimeError(f"Failed to download {url}: {e}") from e
     
     def extract(self, package_file: Path, extract_dir: Path) -> Path:
         """Extract .deb package using dpkg-deb or ar+tar.

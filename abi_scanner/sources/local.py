@@ -5,49 +5,7 @@ from pathlib import Path
 from typing import List
 
 from .base import PackageSource
-
-
-def safe_extract_tar(tar, extract_dir: Path):
-    """Safely extract tar archive preventing path traversal (CVE-2007-4559)."""
-    extract_dir = extract_dir.resolve()
-    
-    for member in tar.getmembers():
-        member_path = (extract_dir / member.name).resolve()
-        
-        # Check path traversal
-        if not str(member_path).startswith(str(extract_dir)):
-            raise RuntimeError(
-                f"Path traversal attempt: {member.name} outside {extract_dir}"
-            )
-        
-        # Reject symlinks, hard links, device files
-        if member.issym() or member.islnk() or member.isdev() or member.ischr() or member.isblk():
-            raise RuntimeError(f"Unsafe tar member: {member.name}")
-        
-        # Extract regular files and directories only
-        if member.isfile() or member.isdir():
-            tar.extract(member, extract_dir)
-
-
-def safe_extract_zip(zf, extract_dir: Path):
-    """Safely extract zip archive preventing path traversal."""
-    extract_dir = extract_dir.resolve()
-    
-    for name in zf.namelist():
-        member_path = (extract_dir / name).resolve()
-        
-        # Check path traversal
-        if not str(member_path).startswith(str(extract_dir)):
-            raise RuntimeError(
-                f"Path traversal attempt: {name} outside {extract_dir}"
-            )
-        
-        # Extract
-        if name.endswith('/'):
-            member_path.mkdir(parents=True, exist_ok=True)
-        else:
-            member_path.parent.mkdir(parents=True, exist_ok=True)
-            member_path.write_bytes(zf.read(name))
+from .utils import safe_extract_tar, safe_extract_zip
 
 
 class LocalSource(PackageSource):
@@ -119,8 +77,8 @@ class LocalSource(PackageSource):
                     check=True,
                     capture_output=True
                 )
-            except FileNotFoundError:
-                raise RuntimeError("dpkg-deb not found. Install dpkg.")
+            except FileNotFoundError as e:
+                raise RuntimeError("dpkg-deb not found. Install dpkg.") from e
         
         elif suffix in ['.bz2', '.gz', '.xz'] or package_file.name.endswith('.tar.bz2'):
             import tarfile
@@ -128,11 +86,11 @@ class LocalSource(PackageSource):
                 safe_extract_tar(tar, extract_dir)
         
         elif suffix == '.conda':
-            import subprocess
-            subprocess.run(
-                ['unzip', '-q', str(package_file), '-d', str(extract_dir)],
-                check=True
-            )
+            import zipfile
+            # .conda is a zip archive - extract safely
+            with zipfile.ZipFile(package_file) as zf:
+                safe_extract_zip(zf, extract_dir)
+            
             # .conda format has pkg/ subdirectory - validate it
             pkg_dir = extract_dir / 'pkg'
             if pkg_dir.exists():

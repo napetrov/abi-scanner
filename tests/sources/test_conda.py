@@ -97,25 +97,29 @@ def test_conda_source_download_cached(mock_run, tmp_path):
     assert result == existing_pkg
 
 
-@patch('abi_scanner.sources.conda.subprocess.run')
-def test_conda_source_extract_tar_bz2(mock_run, tmp_path):
+def test_conda_source_extract_tar_bz2(tmp_path):
     """Test extracting .tar.bz2 conda package."""
-    # Mock version check
-    mock_run.return_value = Mock(returncode=0)
     source = CondaSource()
-    mock_run.reset_mock()
     
+    # Create a real tar.bz2 file for extraction
+    import tarfile
     package_file = tmp_path / 'test-1.0.0.tar.bz2'
-    package_file.write_text('fake')
     extract_dir = tmp_path / 'extracted'
+    
+    # Create fake package content
+    content_dir = tmp_path / 'content'
+    content_dir.mkdir()
+    (content_dir / 'test.txt').write_text('test content')
+    
+    # Create tar.bz2
+    with tarfile.open(package_file, 'w:bz2') as tar:
+        tar.add(content_dir / 'test.txt', arcname='test.txt')
     
     result = source.extract(package_file, extract_dir)
     
-    # Should call tar
-    assert mock_run.called
-    call_args = mock_run.call_args[0][0]
-    assert 'tar' in call_args
-    assert 'xjf' in call_args
+    # Should extract successfully
+    assert result == extract_dir
+    assert (extract_dir / 'test.txt').exists()
 
 
 def test_conda_source_find_libraries(tmp_path):
