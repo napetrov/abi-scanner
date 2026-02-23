@@ -39,7 +39,9 @@ def main() -> int:
     result = analyzer.compare(baseline_old, baseline_new, filter_old, filter_new)
     print(json.dumps(result.to_dict(), indent=2))
 
-    return 0
+    # Propagate abidiff exit code for CI integration
+    # 0=no change, 4=additions, 8=changes, 12=breaking
+    return result.exit_code
 
 
 if __name__ == "__main__":

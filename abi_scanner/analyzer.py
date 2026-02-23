@@ -5,6 +5,7 @@ This module provides ABI baseline generation and comparison functionality.
 
 import json
 import re
+import shutil
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -317,14 +318,24 @@ class ABIAnalyzer:
         self._check_tools()
     
     def _check_tools(self):
-        """Verify abidw/abidiff are available"""
+        """Verify abidw/abidiff are available and resolve to absolute paths"""
+        # Resolve tools to absolute paths (avoid PATH hijacking)
+        self._abidw = shutil.which("abidw")
+        self._abidiff = shutil.which("abidiff")
+        
+        if not self._abidw or not self._abidiff:
+            raise RuntimeError(
+                "libabigail tools (abidw/abidiff) not found in PATH. "
+                "Install: apt-get install abigail-tools"
+            )
+        
+        # Verify tools are executable and working
         try:
-            subprocess.run(["abidw", "--version"], capture_output=True, check=True)
-            subprocess.run(["abidiff", "--version"], capture_output=True, check=True)
+            subprocess.run([self._abidw, "--version"], capture_output=True, check=True)
+            subprocess.run([self._abidiff, "--version"], capture_output=True, check=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             raise RuntimeError(
-                "libabigail tools (abidw/abidiff) not found. "
-                "Install: apt-get install abigail-tools"
+                f"libabigail tools found but not functional: {e}"
             ) from e
     
     def generate_baseline(
@@ -343,7 +354,7 @@ class ABIAnalyzer:
         Raises:
             subprocess.CalledProcessError: If abidw fails
         """
-        cmd = ["abidw"]
+        cmd = [self._abidw]
         
         if headers:
             for header in headers:
@@ -383,7 +394,7 @@ class ABIAnalyzer:
             ABIComparisonResult with verdict and detailed changes
         """
         # Run abidiff
-        cmd = ["abidiff"]
+        cmd = [self._abidiff]
         
         if self.suppressions and self.suppressions.exists():
             cmd.extend(["--suppressions", str(self.suppressions)])
