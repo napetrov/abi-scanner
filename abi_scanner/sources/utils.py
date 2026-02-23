@@ -1,5 +1,6 @@
 """Utility functions for safe package extraction."""
 
+import os
 from pathlib import Path
 import tarfile
 import zipfile
@@ -21,8 +22,15 @@ def safe_extract_tar(tar: tarfile.TarFile, extract_dir: Path):
         # Compute target path and resolve it
         member_path = (extract_dir / member.name).resolve()
         
-        # Check path traversal
-        if not str(member_path).startswith(str(extract_dir)):
+        # Check path traversal using commonpath (more robust than startswith)
+        try:
+            if os.path.commonpath([str(extract_dir), str(member_path)]) != str(extract_dir):
+                raise RuntimeError(
+                    f"Path traversal attempt detected: {member.name} "
+                    f"would extract outside {extract_dir}"
+                )
+        except ValueError:
+            # commonpath raises ValueError if paths are on different drives (Windows)
             raise RuntimeError(
                 f"Path traversal attempt detected: {member.name} "
                 f"would extract outside {extract_dir}"
@@ -58,8 +66,14 @@ def safe_extract_zip(zf: zipfile.ZipFile, extract_dir: Path):
     for name in zf.namelist():
         member_path = (extract_dir / name).resolve()
         
-        # Check path traversal
-        if not str(member_path).startswith(str(extract_dir)):
+        # Check path traversal using commonpath (more robust than startswith)
+        try:
+            if os.path.commonpath([str(extract_dir), str(member_path)]) != str(extract_dir):
+                raise RuntimeError(
+                    f"Path traversal attempt: {name} outside {extract_dir}"
+                )
+        except ValueError:
+            # commonpath raises ValueError if paths are on different drives
             raise RuntimeError(
                 f"Path traversal attempt: {name} outside {extract_dir}"
             )
