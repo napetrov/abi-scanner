@@ -12,6 +12,7 @@ tmp/
 temp/
 *.tmp
 *.cache
+.pytest_cache/
 __pycache__/
 *.pyc
 *.pyo
@@ -43,6 +44,8 @@ Thumbs.db
 micromamba_root/
 conda_env/
 env/
+.venv/
+venv/
 
 # Logs
 *.log
