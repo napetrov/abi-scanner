@@ -168,7 +168,7 @@ def find_library(env_path: Path, package: str, verbose: bool = False) -> Optiona
     """
     lib_patterns = [
         f"lib{package}.so*",
-        f"libonedal.so*",  # DAL specific
+        "libonedal.so*",  # DAL specific
     ]
     
     for pattern in lib_patterns:
@@ -248,11 +248,13 @@ def parse_abidiff_symbols(stdout: str, classifier: SymbolClassifier) -> Dict[str
     current_section = None
     for line in stdout.splitlines():
         line = line.strip()
-        
+
         if "Removed function symbols" in line:
             current_section = "removed"
         elif "Added function symbols" in line:
             current_section = "added"
+        elif ("Removed" in line or "Added" in line) and "function symbols" not in line:
+            current_section = None
         elif line.startswith("[D]") or line.startswith("[A]"):
             symbol = line.split(maxsplit=1)[1] if len(line.split(maxsplit=1)) > 1 else ""
             category = classifier.classify(symbol)
@@ -282,8 +284,14 @@ def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = Non
     if suppressions and suppressions.exists():
         cmd.extend(["--suppressions", str(suppressions)])
     cmd.extend([str(old_abi), str(new_abi)])
-    
+
+    if verbose:
+        print(f"  Running: {' '.join(cmd)}")
+
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+    if verbose and result.stderr:
+        print(f"  abidiff stderr: {result.stderr[:500]}")
     
     # Parse with classifier
     if classifier:
@@ -310,7 +318,8 @@ def main():
     parser = argparse.ArgumentParser(description="Compare ABI across all package versions")
     parser.add_argument("channel", help="Conda channel (e.g., conda-forge)")
     parser.add_argument("package", help="Package name (e.g., dal)")
-    parser.add_argument("--cache-dir", default="/tmp/abi_cache", help="Cache directory")
+    default_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "abi_cache"
+    parser.add_argument("--cache-dir", default=str(default_cache), help="Cache directory")
     parser.add_argument("--devel-package", help="Development package name (e.g., dal-devel)")
     parser.add_argument("--headers-subdir", default="include", help="Headers subdirectory in package")
     parser.add_argument("--suppressions", help="Suppressions file path")
@@ -394,11 +403,11 @@ def main():
         
         if args.track_preview:
             prev = stats.get("preview", {"removed": 0, "added": 0})
-            if prev["removed"] or prev["added"]:
-                line += f" | preview: -{prev['removed']} +{prev['added']}"
             intern = stats.get("internal", {"removed": 0, "added": 0})
-            if intern["removed"] or intern["added"]:
-                line += f" | internal: -{intern['removed']} +{intern['added']}"
+            line += (
+                f" | preview: -{prev['removed']} +{prev['added']}"
+                f" | internal: -{intern['removed']} +{intern['added']}"
+            )
         
         print(line)
         results.append({"old": old_ver, "new": new_ver, "exit_code": exit_code, "stats": stats})
