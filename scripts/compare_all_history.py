@@ -371,19 +371,19 @@ def main():
                 
                 if not download_packages(args.channel, args.package, ver, env_path,
                                         args.devel_package, args.verbose):
-                    break
+                    continue
                 
                 lib = find_library(env_path, args.package, args.verbose)
                 if not lib:
                     if args.verbose:
                         print(f"  Library not found for {ver}")
-                    break
+                    continue
                 
                 headers = env_path / args.headers_subdir if args.devel_package else None
                 suppressions = Path(args.suppressions) if args.suppressions else None
                 
                 if not generate_abi_baseline(lib, abi_path, headers, suppressions, args.verbose):
-                    break
+                    continue
         
         # Compare
         if not old_abi.exists() or not new_abi.exists():
