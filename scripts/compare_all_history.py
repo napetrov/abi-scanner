@@ -1,14 +1,107 @@
 #!/usr/bin/env python3
-"""Compare ABI across all package versions."""
+"""Compare ABI across all package versions with symbol classification.
+
+This script automates ABI compatibility analysis by:
+- Downloading runtime and development packages from conda
+- Generating ABI baselines using libabigail (abidw)
+- Comparing baselines and classifying symbol changes
+- Demangling C++ symbols for accurate classification
+- Reporting public, preview, and internal API changes separately
+"""
 import argparse
 import os
+import re
 import subprocess
-import glob
 import tempfile
 from pathlib import Path
+from typing import Optional, Tuple, Dict, List
+
+
+def demangle_symbol(symbol: str) -> str:
+    """Demangle a C++ symbol using c++filt.
+    
+    Args:
+        symbol: Mangled symbol name
+        
+    Returns:
+        Demangled symbol name, or original if demangling fails
+    """
+    try:
+        result = subprocess.run(
+            ['c++filt', symbol],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return symbol
+
+
+class SymbolClassifier:
+    """Classify C++ symbols into public, preview, or internal API categories.
+    
+    Uses regex patterns on demangled names to identify:
+    - Internal: implementation details (::detail::, ::backend::, mkl_, etc.)
+    - Preview: unstable/experimental APIs (::preview::, ::experimental::)
+    - Public: stable public APIs (everything else)
+    """
+    
+    def __init__(self):
+        """Initialize symbol classifier with predefined patterns."""
+        self.internal_patterns = [
+            r"::detail::",
+            r"::backend::",
+            r"::internal::",
+            r"::impl::",
+            r"^mkl_",
+            r"^tbb::",
+            r"^daal::.*::internal::",
+        ]
+        self.preview_patterns = [
+            r"::preview::",
+            r"::experimental::",
+        ]
+        self._internal_re = [re.compile(p) for p in self.internal_patterns]
+        self._preview_re = [re.compile(p) for p in self.preview_patterns]
+    
+    def classify(self, symbol: str) -> str:
+        """Classify a symbol into 'internal', 'preview', or 'public'.
+        
+        Args:
+            symbol: Mangled or demangled C++ symbol name
+            
+        Returns:
+            Category string: 'internal', 'preview', or 'public'
+        """
+        # Demangle if it looks mangled
+        if symbol.startswith('_Z'):
+            demangled = demangle_symbol(symbol)
+        else:
+            demangled = symbol
+        
+        for pattern in self._internal_re:
+            if pattern.search(demangled):
+                return "internal"
+        for pattern in self._preview_re:
+            if pattern.search(demangled):
+                return "preview"
+        return "public"
+
 
 def get_package_versions(channel, package):
-    """Get all available versions for a package from conda."""
+    """Get all available versions for a package from conda channel.
+    
+    Args:
+        channel: Conda channel name (e.g., 'conda-forge')
+        package: Package name (e.g., 'dal')
+        
+    Returns:
+        List of version strings sorted by packaging.version.Version
+    """
     result = subprocess.run(
         ["micromamba", "search", "-c", channel, package, "--json"],
         capture_output=True, text=True, check=False
@@ -20,122 +113,225 @@ def get_package_versions(channel, package):
     data = json.loads(result.stdout)
     versions = sorted(set(pkg["version"] for pkg in data.get("result", {}).get("pkgs", [])))
     
-    # Sort by version
     from packaging.version import Version
     try:
         return sorted(versions, key=lambda v: Version(v))
     except:
         return sorted(versions)
 
-def download_and_extract_abi(channel, package, version, cache_dir, verbose=False):
-    """Download package and generate ABI baseline."""
-    baseline_path = Path(cache_dir) / f"{package}_{version}.abi"
-    
-    if baseline_path.exists():
-        if verbose:
-            print(f"  Using cached baseline: {baseline_path}")
-        return baseline_path
-    
-    # Create temp env
-    with tempfile.TemporaryDirectory(prefix="abi_env_") as tmpdir:
-        env_path = Path(tmpdir) / "env"
-        
-        if verbose:
-            print(f"  Downloading {package}={version}...")
-        
-        result = subprocess.run(
-            ["micromamba", "create", "-y", "-r", tmpdir, "-p", str(env_path),
-             "-c", channel, f"{package}={version}"],
-            capture_output=True, text=True, check=False
-        )
-        
-        if result.returncode != 0:
-            if verbose:
-                print(f"  Failed to download: {result.stderr}")
-            return None
-        
-        # Find library
-        lib_patterns = [
-            f"lib{package}.so*",
-            f"libonedal.so*",  # DAL specific
-        ]
-        
-        lib_file = None
-        for pattern in lib_patterns:
-            matches = list(env_path.glob(f"**/{pattern}"))
-            # Find actual .so (not .so.X)
-            for m in matches:
-                if m.suffix == ".so" or (m.suffix and m.name.count(".so") == 1):
-                    lib_file = m
-                    break
-            if lib_file:
-                break
-        
-        if not lib_file:
-            # Fallback: pick first .so.X file
-            for pattern in lib_patterns:
-                matches = list(env_path.glob(f"**/{pattern}"))
-                if matches:
-                    lib_file = matches[0]
-                    break
-        
-        if not lib_file:
-            if verbose:
-                print(f"  No library found for {package}={version}")
-            return None
-        
-        if verbose:
-            print(f"  Found library: {lib_file.name}")
-            print(f"  Generating ABI baseline...")
-        
-        result = subprocess.run(
-            ["abidw", "--out-file", str(baseline_path), str(lib_file)],
-            capture_output=True, text=True, check=False
-        )
-        
-        if result.returncode != 0:
-            if verbose:
-                print(f"  abidw failed: {result.stderr}")
-            return None
-    
-    return baseline_path
 
-def compare_abi(old_abi, new_abi, suppressions=None, verbose=False):
-    """Run abidiff and return results."""
-    cmd = ["abidiff"]
-    if suppressions and Path(suppressions).exists():
-        cmd.extend(["--suppressions", suppressions])
-    cmd.extend([str(old_abi), str(new_abi)])
+def download_packages(channel: str, package: str, version: str, env_path: Path, 
+                      devel_package: Optional[str] = None, verbose: bool = False) -> bool:
+    """Download runtime and optional development packages into environment.
+    
+    Args:
+        channel: Conda channel name
+        package: Runtime package name
+        version: Package version
+        env_path: Path to target environment
+        devel_package: Optional development package name (e.g., 'dal-devel')
+        verbose: Enable verbose output
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    packages = [f"{package}={version}"]
+    if devel_package:
+        packages.append(f"{devel_package}={version}")
+    
+    if verbose:
+        print(f"  Downloading: {', '.join(packages)}")
+    
+    result = subprocess.run(
+        ["micromamba", "create", "-y", "-r", str(env_path.parent / "root"),
+         "-p", str(env_path), "-c", channel] + packages,
+        capture_output=True, text=True, check=False
+    )
+    
+    if result.returncode != 0:
+        if verbose:
+            print(f"  Failed to download: {result.stderr[-300:]}")
+        return False
+    return True
+
+
+def find_library(env_path: Path, package: str, verbose: bool = False) -> Optional[Path]:
+    """Find shared library (.so) in conda environment.
+    
+    Args:
+        env_path: Path to conda environment
+        package: Package name to locate library for
+        verbose: Enable verbose output
+        
+    Returns:
+        Path to library if found, None otherwise
+    """
+    lib_patterns = [
+        f"lib{package}.so*",
+        "libonedal.so*",  # DAL specific
+    ]
+    
+    for pattern in lib_patterns:
+        matches = list(env_path.glob(f"**/{pattern}"))
+        for m in matches:
+            if m.suffix == ".so" or (m.suffix and m.name.count(".so") == 1):
+                if verbose:
+                    print(f"  Found library: {m}")
+                return m
+    
+    # Fallback: pick first .so.X
+    for pattern in lib_patterns:
+        matches = list(env_path.glob(f"**/{pattern}"))
+        if matches:
+            if verbose:
+                print(f"  Found library (fallback): {matches[0]}")
+            return matches[0]
+    
+    return None
+
+
+def generate_abi_baseline(lib_path: Path, output_path: Path, headers_dir: Optional[Path] = None,
+                          suppressions: Optional[Path] = None, verbose: bool = False) -> bool:
+    """Generate ABI baseline using abidw.
+    
+    Args:
+        lib_path: Path to shared library
+        output_path: Path to output .abi file
+        headers_dir: Optional path to public headers directory
+        suppressions: Optional path to suppressions file
+        verbose: Enable verbose output
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    cmd = ["abidw", "--out-file", str(output_path)]
+    
+    if headers_dir and headers_dir.exists():
+        cmd.extend(["--headers-dir", str(headers_dir)])
+        if verbose:
+            print(f"  Using headers: {headers_dir}")
+    elif verbose and headers_dir:
+        print(f"  Warning: headers not found: {headers_dir}")
+    
+    if suppressions and suppressions.exists():
+        cmd.extend(["--suppressions", str(suppressions)])
+    
+    cmd.append(str(lib_path))
     
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     
-    # Parse summary
-    removed = added = 0
-    for line in result.stdout.splitlines():
-        if "Function symbols changes summary:" in line:
-            parts = line.split()
-            try:
-                idx_removed = parts.index("Removed,")
-                idx_added = parts.index("Added")
-                removed = int(parts[idx_removed - 1])
-                added = int(parts[idx_added - 1])
-            except (ValueError, IndexError):
-                pass
+    if result.returncode != 0:
+        if verbose:
+            print(f"  abidw failed: {result.stderr[-300:]}")
+        return False
+    return True
+
+
+def parse_abidiff_symbols(stdout: str, classifier: SymbolClassifier) -> Dict[str, Dict[str, int]]:
+    """Parse abidiff output and classify symbols by category.
     
-    return result.returncode, removed, added, result.stdout
+    Args:
+        stdout: abidiff stdout output
+        classifier: SymbolClassifier instance
+        
+    Returns:
+        Dictionary with structure: {category: {action: count}}
+        where category is 'public'/'preview'/'internal'
+        and action is 'removed'/'added'
+    """
+    stats = {
+        "public": {"removed": 0, "added": 0},
+        "preview": {"removed": 0, "added": 0},
+        "internal": {"removed": 0, "added": 0},
+    }
+    
+    current_section = None
+    for line in stdout.splitlines():
+        line = line.strip()
+
+        if "Removed function symbols" in line:
+            current_section = "removed"
+        elif "Added function symbols" in line:
+            current_section = "added"
+        elif ("Removed" in line or "Added" in line) and "function symbols" not in line:
+            current_section = None
+        elif line.startswith("[D]") or line.startswith("[A]"):
+            symbol = line.split(maxsplit=1)[1] if len(line.split(maxsplit=1)) > 1 else ""
+            category = classifier.classify(symbol)
+            if current_section and category in stats:
+                stats[category][current_section] += 1
+    
+    return stats
+
+
+def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = None,
+                classifier: Optional[SymbolClassifier] = None, verbose: bool = False) -> Tuple[int, Dict]:
+    """Compare two ABI baselines using abidiff.
+    
+    Args:
+        old_abi: Path to old baseline .abi file
+        new_abi: Path to new baseline .abi file
+        suppressions: Optional path to suppressions file
+        classifier: Optional SymbolClassifier for categorizing changes
+        verbose: Enable verbose output
+        
+    Returns:
+        Tuple of (exit_code, stats_dict)
+        where exit_code is abidiff return code (0/4/8/12)
+        and stats_dict contains per-category change counts
+    """
+    cmd = ["abidiff"]
+    if suppressions and suppressions.exists():
+        cmd.extend(["--suppressions", str(suppressions)])
+    cmd.extend([str(old_abi), str(new_abi)])
+
+    if verbose:
+        print(f"  Running: {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+    if verbose and result.stderr:
+        print(f"  abidiff stderr: {result.stderr[:500]}")
+    
+    # Parse with classifier
+    if classifier:
+        stats = parse_abidiff_symbols(result.stdout, classifier)
+    else:
+        # Fallback: simple counting
+        stats = {"public": {"removed": 0, "added": 0}}
+        for line in result.stdout.splitlines():
+            if "Function symbols changes summary:" in line:
+                parts = line.replace(",", "").split()
+                try:
+                    ridx = parts.index("Removed")
+                    aidx = parts.index("Added")
+                    stats["public"]["removed"] = int(parts[ridx - 1])
+                    stats["public"]["added"] = int(parts[aidx - 1])
+                except (ValueError, IndexError):
+                    pass
+    
+    return result.returncode, stats
+
 
 def main():
+    """Main entry point for ABI comparison workflow."""
     parser = argparse.ArgumentParser(description="Compare ABI across all package versions")
     parser.add_argument("channel", help="Conda channel (e.g., conda-forge)")
     parser.add_argument("package", help="Package name (e.g., dal)")
-    parser.add_argument("--cache-dir", default="/tmp/abi_cache", help="Cache directory for baselines")
-    parser.add_argument("--suppressions", help="Path to suppressions file (optional)")
+    default_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "abi_cache"
+    parser.add_argument("--cache-dir", default=str(default_cache), help="Cache directory")
+    parser.add_argument("--devel-package", help="Development package name (e.g., dal-devel)")
+    parser.add_argument("--headers-subdir", default="include", help="Headers subdirectory in package")
+    parser.add_argument("--suppressions", help="Suppressions file path")
+    parser.add_argument("--track-preview", action="store_true", help="Track preview/experimental API separately")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     
     args = parser.parse_args()
     
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    classifier = SymbolClassifier() if args.track_preview else None
     
     print(f"Fetching versions for {args.channel}:{args.package}...")
     versions = get_package_versions(args.channel, args.package)
@@ -146,42 +342,77 @@ def main():
     
     print(f"Total versions: {len(versions)}")
     print(f"Total comparisons: {len(versions)-1}")
+    if args.devel_package:
+        print(f"Using devel package: {args.devel_package}")
+    if args.track_preview:
+        print("Tracking preview/experimental API separately")
     print()
     
     results = []
     
     for i in range(len(versions) - 1):
-        old_ver = versions[i]
-        new_ver = versions[i+1]
+        old_ver, new_ver = versions[i], versions[i+1]
         
         if args.verbose:
-            print(f"Processing {old_ver} → {new_ver}")
+            print(f"\nProcessing {old_ver} → {new_ver}")
         
-        old_abi = download_and_extract_abi(args.channel, args.package, old_ver, cache_dir, args.verbose)
-        new_abi = download_and_extract_abi(args.channel, args.package, new_ver, cache_dir, args.verbose)
+        old_abi = cache_dir / f"{args.package}_{old_ver}.abi"
+        new_abi = cache_dir / f"{args.package}_{new_ver}.abi"
         
-        if not old_abi or not new_abi:
+        # Generate baselines if not cached
+        for ver, abi_path in [(old_ver, old_abi), (new_ver, new_abi)]:
+            if abi_path.exists():
+                if args.verbose:
+                    print(f"  Using cached: {abi_path.name}")
+                continue
+            
+            with tempfile.TemporaryDirectory(prefix="abi_env_") as tmpdir:
+                env_path = Path(tmpdir) / "env"
+                
+                if not download_packages(args.channel, args.package, ver, env_path,
+                                        args.devel_package, args.verbose):
+                    continue
+                
+                lib = find_library(env_path, args.package, args.verbose)
+                if not lib:
+                    if args.verbose:
+                        print(f"  Library not found for {ver}")
+                    continue
+                
+                headers = env_path / args.headers_subdir if args.devel_package else None
+                suppressions = Path(args.suppressions) if args.suppressions else None
+                
+                if not generate_abi_baseline(lib, abi_path, headers, suppressions, args.verbose):
+                    continue
+        
+        # Compare
+        if not old_abi.exists() or not new_abi.exists():
             status = "?(3)"
-            removed = added = 0
+            stats = {"public": {"removed": 0, "added": 0}}
+            exit_code = 3
         else:
-            exit_code, removed, added, output = compare_abi(old_abi, new_abi, args.suppressions, args.verbose)
-            status = {
-                0: "✅ NO_CHANGE",
-                4: "✅ COMPATIBLE",
-                8: "⚠️  INCOMPAT",
-                12: "❌ BREAKING"
-            }.get(exit_code, f"?({exit_code})")
+            suppressions = Path(args.suppressions) if args.suppressions else None
+            exit_code, stats = compare_abi(old_abi, new_abi, suppressions, classifier, args.verbose)
+            
+            status_map = {0: "✅ NO_CHANGE", 4: "✅ COMPATIBLE", 8: "⚠️  INCOMPAT", 12: "❌ BREAKING"}
+            status = status_map.get(exit_code, f"?({exit_code})")
         
-        line = f"{status} | {old_ver} → {new_ver} | removed={removed} added={added}"
+        # Format output
+        pub = stats.get("public", {"removed": 0, "added": 0})
+        line = f"{status} | {old_ver} → {new_ver} | public: -{pub['removed']} +{pub['added']}"
+        
+        if args.track_preview:
+            prev = stats.get("preview", {"removed": 0, "added": 0})
+            intern = stats.get("internal", {"removed": 0, "added": 0})
+            line += (
+                f" | preview: -{prev['removed']} +{prev['added']}"
+                f" | internal: -{intern['removed']} +{intern['added']}"
+            )
+        
         print(line)
-        results.append({
-            "old": old_ver,
-            "new": new_ver,
-            "exit_code": exit_code if old_abi and new_abi else 3,
-            "removed": removed,
-            "added": added
-        })
+        results.append({"old": old_ver, "new": new_ver, "exit_code": exit_code, "stats": stats})
     
+    # Summary
     print()
     print("=" * 60)
     print("SUMMARY")
@@ -195,9 +426,11 @@ def main():
     print(f"❌ BREAKING:   {len(breaking)}")
     
     if breaking:
-        print("\nBreaking changes:")
+        print("\nBreaking changes (public API):")
         for r in breaking:
-            print(f"  {r['old']} → {r['new']} (removed={r['removed']}, added={r['added']})")
+            pub = r["stats"].get("public", {"removed": 0, "added": 0})
+            print(f"  {r['old']} → {r['new']} (public: -{pub['removed']} +{pub['added']})")
+
 
 if __name__ == "__main__":
     main()
