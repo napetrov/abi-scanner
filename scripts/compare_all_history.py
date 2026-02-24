@@ -5,6 +5,7 @@ This script automates ABI compatibility analysis by:
 - Downloading runtime and development packages from conda
 - Generating ABI baselines using libabigail (abidw)
 - Comparing baselines and classifying symbol changes
+- Demangling C++ symbols for accurate classification
 - Reporting public, preview, and internal API changes separately
 """
 import argparse
@@ -16,10 +17,34 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, List
 
 
+def demangle_symbol(symbol: str) -> str:
+    """Demangle a C++ symbol using c++filt.
+    
+    Args:
+        symbol: Mangled symbol name
+        
+    Returns:
+        Demangled symbol name, or original if demangling fails
+    """
+    try:
+        result = subprocess.run(
+            ['c++filt', symbol],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return symbol
+
+
 class SymbolClassifier:
     """Classify C++ symbols into public, preview, or internal API categories.
     
-    Uses regex patterns to identify:
+    Uses regex patterns on demangled names to identify:
     - Internal: implementation details (::detail::, ::backend::, mkl_, etc.)
     - Preview: unstable/experimental APIs (::preview::, ::experimental::)
     - Public: stable public APIs (everything else)
@@ -52,11 +77,17 @@ class SymbolClassifier:
         Returns:
             Category string: 'internal', 'preview', or 'public'
         """
+        # Demangle if it looks mangled
+        if symbol.startswith('_Z'):
+            demangled = demangle_symbol(symbol)
+        else:
+            demangled = symbol
+        
         for pattern in self._internal_re:
-            if pattern.search(symbol):
+            if pattern.search(demangled):
                 return "internal"
         for pattern in self._preview_re:
-            if pattern.search(symbol):
+            if pattern.search(demangled):
                 return "preview"
         return "public"
 
