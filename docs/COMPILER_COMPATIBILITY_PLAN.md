@@ -10,7 +10,7 @@ Testing compiler updates (like `icc` to `icx`, or `2025.x` updates) involves mor
 
 ## 2. CodeGen (Object) ABI Compatibility
 - **Scope:** Tracks how the compiler lays out structs, mangles names, and passes arguments (Calling Conventions).
-- **Tooling:** Compile a standardized, heavily-templated C++ test suite (e.g., portions of Boost or a custom reference project) into `.o` or `.so` files using *both* old and new compilers. Run `abidiff` on the resulting object files.
+- **Tooling:** Compile a standardized, heavily-templated C++ test suite (e.g., portions of Boost or a custom reference project) into `.o` or `.so` files using *both* old and new compilers. Run `abidiff` on the resulting object files. Note: the standardized reference test suite must be compiled with debug symbols (e.g., `-g` or `-g3`) so `abidiff` can reconstruct type/layout info; running without `-g` will yield empty or misleading comparisons.
 - **Goal:** Catch silent breakages where the new compiler expects a different memory layout for `std::string` or custom classes than the old compiler.
 
 ## 3. Source-Level (AST) API Compatibility

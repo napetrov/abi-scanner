@@ -255,7 +255,7 @@ def extract_symbol_lists(stdout: str, classifier: SymbolClassifier) -> Dict[str,
 
 def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = None,
                 classifier: Optional[SymbolClassifier] = None,
-                verbose: bool = False) -> Tuple[int, Dict]:
+                verbose: bool = False) -> Tuple[int, Dict, str]:
     """Compare two ABI baselines using abidiff.
 
     Args:
@@ -264,6 +264,10 @@ def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = Non
         suppressions: Optional path to suppressions file
         classifier: Optional SymbolClassifier for categorizing changes
         verbose: Enable verbose output
+
+    Returns:
+        Tuple of (exit_code, statistics_dict, diff_stdout)
+    """
 
     Returns:
         Tuple of (exit_code, stats_dict)
@@ -289,23 +293,21 @@ def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = Non
                     stats["public"]["added"]   = int(parts[parts.index("Added")   - 1])
                 except (ValueError, IndexError):
                     pass
-    return result.returncode, stats
+    return result.returncode, stats, result.stdout
 
 
-def print_details(old_abi: str, new_abi: str, old_ver: str, new_ver: str,
+def print_details(stdout: str, old_ver: str, new_ver: str,
                   classifier: SymbolClassifier, limit: int = 10) -> None:
     """Print detailed removed/added public symbol names for a version pair.
 
     Args:
-        old_abi: Path to old baseline file
-        new_abi: Path to new baseline file
+        stdout: Captured abidiff stdout for this pair
         old_ver: Old version string
         new_ver: New version string
         classifier: SymbolClassifier instance
         limit: Maximum symbols to show per category
     """
-    diff = subprocess.run(["abidiff", old_abi, new_abi], capture_output=True, text=True, check=False)
-    lists = extract_symbol_lists(diff.stdout, classifier)
+    lists = extract_symbol_lists(stdout, classifier)
 
     print(f"\n  {old_ver} → {new_ver}")
     for cat in ("public", "preview", "internal"):
@@ -316,12 +318,16 @@ def print_details(old_abi: str, new_abi: str, old_ver: str, new_ver: str,
         print(f"  [{cat.upper()}]")
         if removed:
             print(f"    Removed ({len(removed)}):")
-            for s in removed[:limit]: print(f"      - {s[:78]}")
-            if len(removed) > limit: print(f"      … +{len(removed)-limit} more")
+            for s in removed[:limit]:
+                print(f"      - {s[:78]}")
+            if len(removed) > limit:
+                print(f"      … +{len(removed)-limit} more")
         if added:
             print(f"    Added ({len(added)}):")
-            for s in added[:limit]: print(f"      + {s[:78]}")
-            if len(added) > limit: print(f"      … +{len(added)-limit} more")
+            for s in added[:limit]:
+                print(f"      + {s[:78]}")
+            if len(added) > limit:
+                print(f"      … +{len(added)-limit} more")
 
 
 def main():
@@ -342,7 +348,7 @@ def main():
     args = parser.parse_args()
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    classifier = SymbolClassifier()
+    classifier = SymbolClassifier() if args.track_preview or getattr(args, "details", False) else None
 
     print(f"Fetching versions for {args.channel}:{args.package}...")
     versions = get_package_versions(args.channel, args.package)
@@ -389,7 +395,7 @@ def main():
             continue
 
         sup = Path(args.suppressions) if args.suppressions else None
-        exit_code, stats = compare_abi(old_abi, new_abi, sup,
+        exit_code, stats, diff_stdout = compare_abi(old_abi, new_abi, sup,
                                        classifier if args.track_preview else None,
                                        args.verbose)
         status = {0:"✅ NO_CHANGE", 4:"✅ COMPATIBLE", 8:"⚠️  INCOMPAT", 12:"❌ BREAKING"}.get(exit_code, f"?({exit_code})")
@@ -401,7 +407,7 @@ def main():
             line += f" | preview: -{prv['removed']} +{prv['added']} | internal: -{itn['removed']} +{itn['added']}"
         print(line)
         results.append({"old": old_ver, "new": new_ver, "exit_code": exit_code,
-                         "stats": stats, "old_abi": str(old_abi), "new_abi": str(new_abi)})
+                         "stats": stats, "old_abi": str(old_abi), "new_abi": str(new_abi), "stdout": diff_stdout})
 
     # Summary
     print()
@@ -427,9 +433,10 @@ def main():
         print(f"DETAILS (top {args.details_limit} symbols per category)")
         print("=" * 60)
         for r in breaking:
-            print_details(r["old_abi"], r["new_abi"], r["old"], r["new"],
+            print_details(r["stdout"], r["old"], r["new"],
                           classifier, args.details_limit)
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    sys.exit(main() or 0)
