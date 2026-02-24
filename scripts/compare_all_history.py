@@ -3,9 +3,9 @@
 import argparse
 import os
 import subprocess
-import glob
 import tempfile
 from pathlib import Path
+
 
 def get_package_versions(channel, package):
     """Get all available versions for a package from conda."""
@@ -27,7 +27,8 @@ def get_package_versions(channel, package):
     except:
         return sorted(versions)
 
-def download_and_extract_abi(channel, package, version, cache_dir, verbose=False):
+
+def download_and_extract_abi(channel, package, version, cache_dir, headers_dir=None, verbose=False):
     """Download package and generate ABI baseline."""
     baseline_path = Path(cache_dir) / f"{package}_{version}.abi"
     
@@ -88,10 +89,22 @@ def download_and_extract_abi(channel, package, version, cache_dir, verbose=False
             print(f"  Found library: {lib_file.name}")
             print(f"  Generating ABI baseline...")
         
-        result = subprocess.run(
-            ["abidw", "--out-file", str(baseline_path), str(lib_file)],
-            capture_output=True, text=True, check=False
-        )
+        # Build abidw command
+        cmd = ["abidw", "--out-file", str(baseline_path)]
+        
+        # Add headers-dir if specified and exists
+        if headers_dir:
+            headers_path = env_path / headers_dir
+            if headers_path.exists():
+                cmd.extend(["--headers-dir", str(headers_path)])
+                if verbose:
+                    print(f"  Using headers from: {headers_path}")
+            elif verbose:
+                print(f"  Warning: headers dir not found: {headers_path}")
+        
+        cmd.append(str(lib_file))
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         
         if result.returncode != 0:
             if verbose:
@@ -99,6 +112,7 @@ def download_and_extract_abi(channel, package, version, cache_dir, verbose=False
             return None
     
     return baseline_path
+
 
 def compare_abi(old_abi, new_abi, suppressions=None, verbose=False):
     """Run abidiff and return results."""
@@ -113,16 +127,17 @@ def compare_abi(old_abi, new_abi, suppressions=None, verbose=False):
     removed = added = 0
     for line in result.stdout.splitlines():
         if "Function symbols changes summary:" in line:
-            parts = line.split()
+            parts = line.replace(",", "").split()
             try:
-                idx_removed = parts.index("Removed,")
-                idx_added = parts.index("Added")
-                removed = int(parts[idx_removed - 1])
-                added = int(parts[idx_added - 1])
+                ridx = parts.index("Removed")
+                aidx = parts.index("Added")
+                removed = int(parts[ridx - 1])
+                added = int(parts[aidx - 1])
             except (ValueError, IndexError):
                 pass
     
     return result.returncode, removed, added, result.stdout
+
 
 def main():
     parser = argparse.ArgumentParser(description="Compare ABI across all package versions")
@@ -130,6 +145,7 @@ def main():
     parser.add_argument("package", help="Package name (e.g., dal)")
     parser.add_argument("--cache-dir", default="/tmp/abi_cache", help="Cache directory for baselines")
     parser.add_argument("--suppressions", help="Path to suppressions file (optional)")
+    parser.add_argument("--headers-dir", help="Relative path to headers dir in package (e.g., include/oneapi)")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     
     args = parser.parse_args()
@@ -146,6 +162,10 @@ def main():
     
     print(f"Total versions: {len(versions)}")
     print(f"Total comparisons: {len(versions)-1}")
+    if args.headers_dir:
+        print(f"Using headers filter: {args.headers_dir}")
+    if args.suppressions:
+        print(f"Using suppressions: {args.suppressions}")
     print()
     
     results = []
@@ -157,14 +177,22 @@ def main():
         if args.verbose:
             print(f"Processing {old_ver} → {new_ver}")
         
-        old_abi = download_and_extract_abi(args.channel, args.package, old_ver, cache_dir, args.verbose)
-        new_abi = download_and_extract_abi(args.channel, args.package, new_ver, cache_dir, args.verbose)
+        old_abi = download_and_extract_abi(
+            args.channel, args.package, old_ver, cache_dir,
+            headers_dir=args.headers_dir, verbose=args.verbose
+        )
+        new_abi = download_and_extract_abi(
+            args.channel, args.package, new_ver, cache_dir,
+            headers_dir=args.headers_dir, verbose=args.verbose
+        )
         
         if not old_abi or not new_abi:
             status = "?(3)"
-            removed = added = 0
+            removed = added = exit_code = 0
         else:
-            exit_code, removed, added, output = compare_abi(old_abi, new_abi, args.suppressions, args.verbose)
+            exit_code, removed, added, output = compare_abi(
+                old_abi, new_abi, args.suppressions, args.verbose
+            )
             status = {
                 0: "✅ NO_CHANGE",
                 4: "✅ COMPATIBLE",
@@ -198,6 +226,7 @@ def main():
         print("\nBreaking changes:")
         for r in breaking:
             print(f"  {r['old']} → {r['new']} (removed={r['removed']}, added={r['added']})")
+
 
 if __name__ == "__main__":
     main()
