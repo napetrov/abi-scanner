@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Compare ABI across all package versions."""
+"""Compare ABI across all package versions with symbol classification.
+
+This script automates ABI compatibility analysis by:
+- Downloading runtime and development packages from conda
+- Generating ABI baselines using libabigail (abidw)
+- Comparing baselines and classifying symbol changes
+- Reporting public, preview, and internal API changes separately
+"""
 import argparse
 import os
 import re
@@ -10,9 +17,16 @@ from typing import Optional, Tuple, Dict, List
 
 
 class SymbolClassifier:
-    """Classify symbols into public/preview/internal categories"""
+    """Classify C++ symbols into public, preview, or internal API categories.
+    
+    Uses regex patterns to identify:
+    - Internal: implementation details (::detail::, ::backend::, mkl_, etc.)
+    - Preview: unstable/experimental APIs (::preview::, ::experimental::)
+    - Public: stable public APIs (everything else)
+    """
     
     def __init__(self):
+        """Initialize symbol classifier with predefined patterns."""
         self.internal_patterns = [
             r"::detail::",
             r"::backend::",
@@ -30,7 +44,14 @@ class SymbolClassifier:
         self._preview_re = [re.compile(p) for p in self.preview_patterns]
     
     def classify(self, symbol: str) -> str:
-        """Return 'internal', 'preview', or 'public'"""
+        """Classify a symbol into 'internal', 'preview', or 'public'.
+        
+        Args:
+            symbol: Mangled or demangled C++ symbol name
+            
+        Returns:
+            Category string: 'internal', 'preview', or 'public'
+        """
         for pattern in self._internal_re:
             if pattern.search(symbol):
                 return "internal"
@@ -41,7 +62,15 @@ class SymbolClassifier:
 
 
 def get_package_versions(channel, package):
-    """Get all available versions for a package from conda."""
+    """Get all available versions for a package from conda channel.
+    
+    Args:
+        channel: Conda channel name (e.g., 'conda-forge')
+        package: Package name (e.g., 'dal')
+        
+    Returns:
+        List of version strings sorted by packaging.version.Version
+    """
     result = subprocess.run(
         ["micromamba", "search", "-c", channel, package, "--json"],
         capture_output=True, text=True, check=False
@@ -62,7 +91,19 @@ def get_package_versions(channel, package):
 
 def download_packages(channel: str, package: str, version: str, env_path: Path, 
                       devel_package: Optional[str] = None, verbose: bool = False) -> bool:
-    """Download runtime + devel packages into environment"""
+    """Download runtime and optional development packages into environment.
+    
+    Args:
+        channel: Conda channel name
+        package: Runtime package name
+        version: Package version
+        env_path: Path to target environment
+        devel_package: Optional development package name (e.g., 'dal-devel')
+        verbose: Enable verbose output
+        
+    Returns:
+        True if successful, False otherwise
+    """
     packages = [f"{package}={version}"]
     if devel_package:
         packages.append(f"{devel_package}={version}")
@@ -84,7 +125,16 @@ def download_packages(channel: str, package: str, version: str, env_path: Path,
 
 
 def find_library(env_path: Path, package: str, verbose: bool = False) -> Optional[Path]:
-    """Find shared library in environment"""
+    """Find shared library (.so) in conda environment.
+    
+    Args:
+        env_path: Path to conda environment
+        package: Package name to locate library for
+        verbose: Enable verbose output
+        
+    Returns:
+        Path to library if found, None otherwise
+    """
     lib_patterns = [
         f"lib{package}.so*",
         f"libonedal.so*",  # DAL specific
@@ -111,7 +161,18 @@ def find_library(env_path: Path, package: str, verbose: bool = False) -> Optiona
 
 def generate_abi_baseline(lib_path: Path, output_path: Path, headers_dir: Optional[Path] = None,
                           suppressions: Optional[Path] = None, verbose: bool = False) -> bool:
-    """Generate ABI baseline using abidw"""
+    """Generate ABI baseline using abidw.
+    
+    Args:
+        lib_path: Path to shared library
+        output_path: Path to output .abi file
+        headers_dir: Optional path to public headers directory
+        suppressions: Optional path to suppressions file
+        verbose: Enable verbose output
+        
+    Returns:
+        True if successful, False otherwise
+    """
     cmd = ["abidw", "--out-file", str(output_path)]
     
     if headers_dir and headers_dir.exists():
@@ -136,7 +197,17 @@ def generate_abi_baseline(lib_path: Path, output_path: Path, headers_dir: Option
 
 
 def parse_abidiff_symbols(stdout: str, classifier: SymbolClassifier) -> Dict[str, Dict[str, int]]:
-    """Parse abidiff output and classify symbols"""
+    """Parse abidiff output and classify symbols by category.
+    
+    Args:
+        stdout: abidiff stdout output
+        classifier: SymbolClassifier instance
+        
+    Returns:
+        Dictionary with structure: {category: {action: count}}
+        where category is 'public'/'preview'/'internal'
+        and action is 'removed'/'added'
+    """
     stats = {
         "public": {"removed": 0, "added": 0},
         "preview": {"removed": 0, "added": 0},
@@ -162,7 +233,20 @@ def parse_abidiff_symbols(stdout: str, classifier: SymbolClassifier) -> Dict[str
 
 def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = None,
                 classifier: Optional[SymbolClassifier] = None, verbose: bool = False) -> Tuple[int, Dict]:
-    """Compare two ABI baselines"""
+    """Compare two ABI baselines using abidiff.
+    
+    Args:
+        old_abi: Path to old baseline .abi file
+        new_abi: Path to new baseline .abi file
+        suppressions: Optional path to suppressions file
+        classifier: Optional SymbolClassifier for categorizing changes
+        verbose: Enable verbose output
+        
+    Returns:
+        Tuple of (exit_code, stats_dict)
+        where exit_code is abidiff return code (0/4/8/12)
+        and stats_dict contains per-category change counts
+    """
     cmd = ["abidiff"]
     if suppressions and suppressions.exists():
         cmd.extend(["--suppressions", str(suppressions)])
@@ -191,6 +275,7 @@ def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = Non
 
 
 def main():
+    """Main entry point for ABI comparison workflow."""
     parser = argparse.ArgumentParser(description="Compare ABI across all package versions")
     parser.add_argument("channel", help="Conda channel (e.g., conda-forge)")
     parser.add_argument("package", help="Package name (e.g., dal)")
