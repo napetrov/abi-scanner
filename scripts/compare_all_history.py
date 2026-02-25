@@ -67,9 +67,11 @@ class SymbolClassifier:
         """
         demangled = demangle_symbol(symbol) if symbol.startswith('_Z') else symbol
         for p in self._internal_re:
-            if p.search(demangled): return "internal"
+            if p.search(demangled):
+                return "internal"
         for p in self._preview_re:
-            if p.search(demangled): return "preview"
+            if p.search(demangled):
+                return "preview"
         return "public"
 
 
@@ -146,12 +148,14 @@ def find_library(env_path: Path, package: str, verbose: bool = False) -> Optiona
     for pattern in lib_patterns:
         for m in env_path.glob(f"**/{pattern}"):
             if m.suffix == ".so" or m.name.count(".so") == 1:
-                if verbose: print(f"  Found: {m}")
+                if verbose:
+                    print(f"  Found: {m}")
                 return m
     for pattern in lib_patterns:
         matches = list(env_path.glob(f"**/{pattern}"))
         if matches:
-            if verbose: print(f"  Found (fallback): {matches[0]}")
+            if verbose:
+                print(f"  Found (fallback): {matches[0]}")
             return matches[0]
     return None
 
@@ -175,15 +179,34 @@ def generate_abi_baseline(lib_path: Path, output_path: Path,
     cmd = ["abidw", "--out-file", str(output_path)]
     if headers_dir and headers_dir.exists():
         cmd.extend(["--headers-dir", str(headers_dir)])
-        if verbose: print(f"  Using headers: {headers_dir}")
+        if verbose:
+            print(f"  Using headers: {headers_dir}")
     if suppressions and suppressions.exists():
         cmd.extend(["--suppressions", str(suppressions)])
     cmd.append(str(lib_path))
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        if verbose: print(f"  abidw failed: {result.stderr[-300:]}")
+        if verbose:
+            print(f"  abidw failed: {result.stderr[-300:]}")
         return False
     return True
+
+
+def _iter_abidiff_symbols(stdout: str):
+    """Yield (section, raw_symbol) from abidiff stdout."""
+    current_section = None
+    for line in stdout.splitlines():
+        s = line.strip()
+        if "Removed function symbols" in s:
+            current_section = "removed"
+        elif "Added function symbols" in s:
+            current_section = "added"
+        elif s.endswith("symbols:") and "function symbols" not in s:
+            current_section = None
+        elif (s.startswith("[D]") or s.startswith("[A]")) and current_section:
+            parts = s.split(maxsplit=1)
+            symbol = parts[1] if len(parts) > 1 else ""
+            yield current_section, symbol
 
 
 def parse_abidiff_symbols(stdout: str, classifier: SymbolClassifier) -> Dict[str, Dict[str, int]]:
@@ -203,20 +226,10 @@ def parse_abidiff_symbols(stdout: str, classifier: SymbolClassifier) -> Dict[str
         "preview":  {"removed": 0, "added": 0},
         "internal": {"removed": 0, "added": 0},
     }
-    current_section = None
-    for line in stdout.splitlines():
-        line = line.strip()
-        if "Removed function symbols" in line:
-            current_section = "removed"
-        elif "Added function symbols" in line:
-            current_section = "added"
-        elif line.endswith("symbols:") and "function symbols" not in line:
-            current_section = None
-        elif (line.startswith("[D]") or line.startswith("[A]")) and current_section:
-            symbol = line.split(maxsplit=1)[1] if len(line.split(maxsplit=1)) > 1 else ""
-            cat = classifier.classify(symbol)
-            if cat in stats:
-                stats[cat][current_section] += 1
+    for section, symbol in _iter_abidiff_symbols(stdout):
+        cat = classifier.classify(symbol)
+        if cat in stats:
+            stats[cat][section] += 1
     return stats
 
 
@@ -235,21 +248,11 @@ def extract_symbol_lists(stdout: str, classifier: SymbolClassifier) -> Dict[str,
         "preview":  {"removed": [], "added": []},
         "internal": {"removed": [], "added": []},
     }
-    current_section = None
-    for line in stdout.splitlines():
-        stripped = line.strip()
-        if "Removed function symbols" in stripped:
-            current_section = "removed"
-        elif "Added function symbols" in stripped:
-            current_section = "added"
-        elif stripped.endswith("symbols:") and "function symbols" not in stripped:
-            current_section = None
-        elif (stripped.startswith("[D]") or stripped.startswith("[A]")) and current_section:
-            symbol = stripped.split(maxsplit=1)[1] if len(stripped.split(maxsplit=1)) > 1 else ""
-            demangled = demangle_symbol(symbol) if symbol.startswith("_Z") else symbol
-            cat = classifier.classify(symbol)
-            if cat in result:
-                result[cat][current_section].append(demangled)
+    for section, symbol in _iter_abidiff_symbols(stdout):
+        demangled = demangle_symbol(symbol) if symbol.startswith("_Z") else symbol
+        cat = classifier.classify(demangled)
+        if cat in result:
+            result[cat][section].append(demangled)
     return result
 
 
@@ -264,10 +267,6 @@ def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = Non
         suppressions: Optional path to suppressions file
         classifier: Optional SymbolClassifier for categorizing changes
         verbose: Enable verbose output
-
-    Returns:
-        Tuple of (exit_code, statistics_dict, diff_stdout)
-    """
 
     Returns:
         Tuple of (exit_code, stats_dict)
@@ -353,25 +352,30 @@ def main():
     print(f"Fetching versions for {args.channel}:{args.package}...")
     versions = get_package_versions(args.channel, args.package)
     if not versions:
-        print("No versions found"); return 1
+        print("No versions found")
+        return 1
 
     print(f"Total versions: {len(versions)}")
     print(f"Total comparisons: {len(versions)-1}")
-    if args.devel_package:  print(f"Using devel package: {args.devel_package}")
-    if args.track_preview:  print("Tracking preview/experimental API separately")
+    if args.devel_package:
+        print(f"Using devel package: {args.devel_package}")
+    if args.track_preview:
+        print("Tracking preview/experimental API separately")
     print()
 
     results = []
     for i in range(len(versions) - 1):
         old_ver, new_ver = versions[i], versions[i+1]
-        if args.verbose: print(f"\nProcessing {old_ver} → {new_ver}")
+        if args.verbose:
+            print(f"\nProcessing {old_ver} → {new_ver}")
 
         old_abi = cache_dir / f"{args.package}_{old_ver}.abi"
         new_abi = cache_dir / f"{args.package}_{new_ver}.abi"
 
         for ver, abi_path in [(old_ver, old_abi), (new_ver, new_abi)]:
             if abi_path.exists():
-                if args.verbose: print(f"  Cached: {abi_path.name}")
+                if args.verbose:
+                    print(f"  Cached: {abi_path.name}")
                 continue
             with tempfile.TemporaryDirectory(prefix="abi_env_") as tmpdir:
                 env_path = Path(tmpdir) / "env"
@@ -380,7 +384,8 @@ def main():
                     continue
                 lib = find_library(env_path, args.package, args.verbose)
                 if not lib:
-                    if args.verbose: print(f"  Library not found for {ver}")
+                    if args.verbose:
+                        print(f"  Library not found for {ver}")
                     continue
                 headers = env_path / args.headers_subdir if args.devel_package else None
                 sup = Path(args.suppressions) if args.suppressions else None
