@@ -11,17 +11,11 @@ from typing import Optional
 
 from .package_spec import PackageSpec
 from .sources import create_source
+from .sources.factory import _find_micromamba
 from .analyzer import ABIAnalyzer, PublicAPIFilter
 
 
 
-
-def _find_micromamba() -> str:
-    candidates = [shutil.which("micromamba"), "/home/ubuntu/bin/micromamba", str(Path.home()/"bin"/"micromamba")]
-    for c in candidates:
-        if c and Path(c).exists():
-            return c
-    raise RuntimeError("micromamba not found")
 
 
 def _find_library(search_dir: Path, library_name: Optional[str],
@@ -52,7 +46,6 @@ def _find_library(search_dir: Path, library_name: Optional[str],
 
 
 def _generate_baseline(lib_path: Path, output_path: Path,
-                        suppressions: Optional[Path] = None,
                         verbose: bool = False) -> bool:
     """Run abidw on a library and save the .abi baseline."""
     abidw = shutil.which("abidw")
@@ -61,6 +54,7 @@ def _generate_baseline(lib_path: Path, output_path: Path,
         return False
 
     cmd = [abidw, "--out-file", str(output_path), str(lib_path)]
+    # Note: suppressions apply only to abidiff, not abidw
     if verbose:
         print(f"  abidw: {lib_path.name}", file=sys.stderr)
 
@@ -93,7 +87,7 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
     if spec.channel in {"conda-forge", "intel"}:
         mm = _find_micromamba()
         env_path = work_dir / "env"
-        channel = "conda-forge" if spec.channel == "conda-forge" else "https://software.repos.intel.com/python/conda"
+        channel = source.channel if hasattr(source, "channel") else spec.channel
         cmd = [mm, "create", "-y", "-p", str(env_path), "-c", channel, f"{spec.package}={spec.version}"]
         if verbose:
             print(f"  Creating env: {' '.join(cmd)}", file=sys.stderr)
@@ -188,10 +182,10 @@ def cmd_compare(args):
             old_abi = tmp / "old.abi"
             new_abi = tmp / "new.abi"
 
-            if not _generate_baseline(old_lib, old_abi, suppressions, args.verbose):
+            if not _generate_baseline(old_lib, old_abi, args.verbose):
                 print("Error: abidw failed for old version", file=sys.stderr)
                 return 1
-            if not _generate_baseline(new_lib, new_abi, suppressions, args.verbose):
+            if not _generate_baseline(new_lib, new_abi, args.verbose):
                 print("Error: abidw failed for new version", file=sys.stderr)
                 return 1
 
@@ -249,19 +243,19 @@ def cmd_compare(args):
 def cmd_compatible(args):
     print(f"Finding compatible versions for {args.spec}")
     print("(not yet implemented)")
-    return 0
+    return 1
 
 
 def cmd_validate(args):
     print(f"Validating SemVer compliance for {args.spec}")
     print("(not yet implemented)")
-    return 0
+    return 1
 
 
 def cmd_list(args):
     print(f"Listing versions for {args.spec}")
     print("(not yet implemented)")
-    return 0
+    return 1
 
 
 def create_parser():

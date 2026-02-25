@@ -1,5 +1,6 @@
 """Factory for creating source adapters from PackageSpec channel."""
 
+import os
 import shutil
 from pathlib import Path
 
@@ -21,7 +22,7 @@ def _find_micromamba() -> str:
     """Auto-detect micromamba binary path."""
     for candidate in _MICROMAMBA_CANDIDATES:
         resolved = shutil.which(candidate) or (candidate if Path(candidate).is_file() else None)
-        if resolved:
+        if resolved and Path(resolved).is_file() and os.access(resolved, os.X_OK):
             return resolved
     return "micromamba"  # let it fail with a clear error at runtime
 
