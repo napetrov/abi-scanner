@@ -41,7 +41,12 @@ def demangle_symbol(symbol: str) -> str:
 
 def extract_namespace(demangled: str) -> str:
     """Extract primary namespace from demangled symbol."""
-    simplified = re.sub(r'<[^>]*>', '', demangled)
+    simplified = demangled
+    while True:
+        new_simplified = re.sub(r'<[^>]*>', '', simplified)
+        if new_simplified == simplified:
+            break
+        simplified = new_simplified
     simplified = re.sub(r'\([^)]*\)', '', simplified)
     parts = simplified.split('::')
     if len(parts) <= 1:
@@ -110,7 +115,6 @@ def get_package_versions(channel, package):
     )
     if result.returncode != 0:
         return []
-    import json
     data = json.loads(result.stdout)
     versions = list(set(pkg["version"] for pkg in data.get("result", {}).get("pkgs", [])))
     from packaging.version import Version
@@ -366,7 +370,7 @@ def main():
     args = parser.parse_args()
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    classifier = SymbolClassifier() if args.track_preview or getattr(args, "details", False) or getattr(args, "json", False) else None
+    classifier = SymbolClassifier() if args.track_preview or args.details or args.json else None
 
     print(f"Fetching versions for {args.channel}:{args.package}...")
     versions = get_package_versions(args.channel, args.package)
@@ -420,7 +424,7 @@ def main():
 
         sup = Path(args.suppressions) if args.suppressions else None
         exit_code, stats, diff_stdout = compare_abi(old_abi, new_abi, sup,
-                                       classifier if args.track_preview else None,
+                                       classifier if (args.track_preview or args.json) else None,
                                        args.verbose)
         status = {0:"✅ NO_CHANGE", 4:"✅ COMPATIBLE", 8:"⚠️  INCOMPAT", 12:"❌ BREAKING"}.get(exit_code, f"?({exit_code})")
         pub = stats.get("public", {"removed": 0, "added": 0})

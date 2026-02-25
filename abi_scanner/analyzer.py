@@ -11,7 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 
 def demangle_symbol(mangled: str) -> str:
@@ -38,8 +38,14 @@ def extract_namespace(demangled: str) -> str:
         'daal::algorithms::covariance::Batch::compute' -> 'daal::algorithms'
         'std::__detail::__variant::foo' -> 'std'
     """
-    # Remove template args, function args, return types
-    simplified = re.sub(r'<[^>]*>', '', demangled)
+    # Remove template args (handle nested like <std::pair<int, int>>)
+    simplified = demangled
+    while True:
+        new_simplified = re.sub(r'<[^>]*>', '', simplified)
+        if new_simplified == simplified:
+            break
+        simplified = new_simplified
+        
     simplified = re.sub(r'\([^)]*\)', '', simplified)
     
     # Extract namespace parts (before last ::)
