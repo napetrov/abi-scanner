@@ -104,6 +104,117 @@ class SymbolClassifier:
         return "public"
 
 
+
+
+# ── APT channel support ───────────────────────────────────────────────────────
+import gzip as _gzip
+import re as _apt_re
+import urllib.request as _urllib_req
+
+INTEL_APT_BASE = 'https://apt.repos.intel.com/oneapi'
+INTEL_APT_PACKAGES_URL = INTEL_APT_BASE + '/dists/all/main/binary-amd64/Packages.gz'
+
+
+def get_apt_package_versions(pkg_pattern: str,
+                              apt_packages_url: str = INTEL_APT_PACKAGES_URL):
+    """Fetch available versions for packages matching pkg_pattern from Intel APT.
+
+    pkg_pattern: regex that matches package names (e.g.
+        r'^intel-oneapi-compiler-dpcpp-cpp-runtime-2025\\.\\d+$').
+    Returns sorted list of (version, filename) tuples.
+    """
+    try:
+        data = _gzip.decompress(
+            _urllib_req.urlopen(apt_packages_url, timeout=60).read()
+        ).decode('utf-8', 'ignore')
+    except Exception as exc:
+        print(f'  APT index fetch failed: {exc}', file=sys.stderr)
+        return []
+
+    pat = _apt_re.compile(pkg_pattern)
+    entries = []
+    for block in data.split('\n\n'):
+        pm = _apt_re.search(r'^Package: (.+)$', block, _apt_re.M)
+        if not pm or not pat.match(pm.group(1)):
+            continue
+        vm = _apt_re.search(r'^Version: (.+)$', block, _apt_re.M)
+        fm = _apt_re.search(r'^Filename: (.+)$', block, _apt_re.M)
+        if vm and fm:
+            entries.append((vm.group(1).strip(), fm.group(1).strip()))
+
+    seen, rows = set(), []
+    for v, f in entries:
+        if v not in seen:
+            seen.add(v)
+            rows.append((v, f))
+
+    def _verkey(v):
+        try:
+            base, build = v.split('-')
+            return tuple(map(int, base.split('.'))) + (int(build),)
+        except Exception:
+            return (0,)
+
+    return sorted(rows, key=lambda x: _verkey(x[0]))
+
+
+def download_and_extract_apt(version: str, filename: str, cache_dir: Path,
+                              apt_base: str = INTEL_APT_BASE,
+                              verbose: bool = False) -> Optional[Path]:
+    """Download .deb from Intel APT and extract it. Returns extract dir."""
+    import subprocess as _sp
+    deb_name = Path(filename).name
+    deb_path = cache_dir / f'apt_{deb_name}'
+    extract_dir = cache_dir / f'apt_extract_{version}'
+
+    if not deb_path.exists():
+        url = f'{apt_base}/{filename}'
+        if verbose:
+            print(f'  Downloading {url} ...')
+        try:
+            _urllib_req.urlretrieve(url, deb_path)
+        except Exception as exc:
+            print(f'  Download failed: {exc}', file=sys.stderr)
+            return None
+    elif verbose:
+        print(f'  Cached deb: {deb_name}')
+
+    if not extract_dir.exists():
+        extract_dir.mkdir(parents=True)
+        try:
+            _sp.run(['dpkg-deb', '-x', str(deb_path), str(extract_dir)],
+                    check=True, capture_output=True)
+        except Exception as exc:
+            print(f'  Extraction failed: {exc}', file=sys.stderr)
+            import shutil as _cleanup_shutil
+            _cleanup_shutil.rmtree(extract_dir, ignore_errors=True)
+            return None
+    return extract_dir
+
+
+def find_library_apt(extract_dir: Path, library_name: str,
+                     verbose: bool = False) -> Optional[Path]:
+    """Find real versioned .so in extracted .deb (not symlinks, not gdb helpers)."""
+    base = library_name.removesuffix('.so').removeprefix('lib')
+    patterns = [
+        f'{library_name}.[0-9]*',   # libccl.so.1.0
+        f'lib{base}.so.[0-9]*',     # libccl.so.1.0
+        library_name,               # exact match fallback
+    ]
+    for pat in patterns:
+        cands = [
+            p for p in extract_dir.rglob(pat)
+            if p.is_file() and not p.is_symlink()
+            and not p.name.endswith('.py') and 'debug' not in str(p)
+        ]
+        if cands:
+            chosen = sorted(cands, key=lambda p: len(p.name))[-1]
+            if verbose:
+                print(f'  Found (apt): {chosen}')
+            return chosen
+    return None
+
+# ─────────────────────────────────────────────────────────────────────────────
 def get_package_versions(channel, package):
     """Get all available versions for a package from conda channel.
 
@@ -173,13 +284,13 @@ def find_library(env_path: Path, package: str, library_name: str = None, verbose
         Path to library if found, None otherwise
     """
     if library_name:
-        base = library_name.replace('.so', '').lstrip('lib')
-        lib_patterns = [library_name + '*', f'lib{base}.so*']
+        base = library_name.removesuffix('.so').removeprefix('lib')
+        lib_patterns = [library_name + '*', f"lib{base}.so*"]
     else:
         lib_patterns = [f'lib{package}.so*', 'libonedal.so*']
     for pattern in lib_patterns:
         for m in env_path.glob(f"**/{pattern}"):
-            if m.suffix == ".so" or m.name.count(".so") == 1:
+            if (m.suffix == ".so" or m.name.count(".so") == 1) and not m.is_symlink():
                 if verbose:
                     print(f"  Found: {m}")
                 return m
@@ -376,21 +487,35 @@ def main():
     parser.add_argument("--json",           help="Path to save results in JSON format")
     parser.add_argument("--verbose",        action="store_true")
     parser.add_argument("--library-name",   help="Primary .so filename to analyse (e.g. libccl.so, libsycl.so)")
-    parser.add_argument("--filter-version", help="Regex to filter version list (e.g. ^2021)")
+    parser.add_argument("--filter-version", help="Regex to filter version list (e.g. ^2021, ^2025)")
+    parser.add_argument("--apt-pkg-pattern", help="Regex for APT package names when channel=apt")
+    parser.add_argument("--apt-base-url", default=INTEL_APT_BASE, help="APT base URL")
 
     args = parser.parse_args()
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     classifier = SymbolClassifier() if args.track_preview or args.details or args.json else None
-
     print(f"Fetching versions for {args.channel}:{args.package}...")
-    versions = get_package_versions(args.channel, args.package)
+    apt_version_map = {}
+    if args.channel == "apt":
+        if not args.library_name:
+            parser.error('--library-name is required for channel=apt (e.g. libsycl.so or libccl.so)')
+        apt_index_url = args.apt_base_url.rstrip("/") + "/dists/all/main/binary-amd64/Packages.gz"
+        if not args.apt_pkg_pattern:
+            parser.error('--apt-pkg-pattern is required for channel=apt (e.g. ^intel-oneapi-compiler-dpcpp-cpp-runtime-2025\\.\\d+$)')
+        apt_rows = get_apt_package_versions(args.apt_pkg_pattern, apt_index_url)
+        versions = [v for v,_ in apt_rows]
+        apt_version_map = {v:f for v,f in apt_rows}
+    else:
+        versions = get_package_versions(args.channel, args.package)
     if args.filter_version:
         try:
             version_re = re.compile(args.filter_version)
         except re.error as exc:
-            parser.error(f"Invalid --filter-version regex: {exc}")
+            parser.error(f'Invalid --filter-version regex: {exc}')
         versions = [v for v in versions if version_re.search(v)]
+        if apt_version_map:
+            apt_version_map = {v: apt_version_map[v] for v in versions if v in apt_version_map}
     if not versions:
         print("No versions found")
         return 1
@@ -417,20 +542,36 @@ def main():
                 if args.verbose:
                     print(f"  Cached: {abi_path.name}")
                 continue
-            with tempfile.TemporaryDirectory(prefix="abi_env_") as tmpdir:
-                env_path = Path(tmpdir) / "env"
-                if not download_packages(args.channel, args.package, ver, env_path,
-                                         args.devel_package, args.verbose):
+            if args.channel == "apt":
+                filename = apt_version_map.get(ver)
+                if not filename:
                     continue
-                lib = find_library(env_path, args.package, library_name=args.library_name, verbose=args.verbose)
+                extract_dir = download_and_extract_apt(ver, filename, cache_dir, args.apt_base_url, args.verbose)
+                if not extract_dir:
+                    continue
+                lib = find_library_apt(extract_dir, args.library_name or args.package, args.verbose)
                 if not lib:
                     if args.verbose:
-                        print(f"  Library not found for {ver}")
+                        print(f"  Library not found for {ver} (apt)")
                     continue
-                headers = env_path / args.headers_subdir if args.devel_package else None
                 sup = Path(args.suppressions) if args.suppressions else None
-                if not generate_abi_baseline(lib, abi_path, headers, sup, args.verbose):
+                if not generate_abi_baseline(lib, abi_path, None, sup, args.verbose):
                     continue
+            else:
+                with tempfile.TemporaryDirectory(prefix="abi_env_") as tmpdir:
+                    env_path = Path(tmpdir) / "env"
+                    if not download_packages(args.channel, args.package, ver, env_path,
+                                             args.devel_package, args.verbose):
+                        continue
+                    lib = find_library(env_path, args.package, library_name=args.library_name, verbose=args.verbose)
+                    if not lib:
+                        if args.verbose:
+                            print(f"  Library not found for {ver}")
+                        continue
+                    headers = env_path / args.headers_subdir if args.devel_package else None
+                    sup = Path(args.suppressions) if args.suppressions else None
+                    if not generate_abi_baseline(lib, abi_path, headers, sup, args.verbose):
+                        continue
 
         if not old_abi.exists() or not new_abi.exists():
             print(f"?(3) | {old_ver} → {new_ver} | baselines missing")
