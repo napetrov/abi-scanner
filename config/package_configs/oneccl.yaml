@@ -27,5 +27,5 @@ private_patterns:
     - ".*::detail::.*"
     - ".*::internal::.*"
   symbol:
-    - "^_.*"
     - "^__.*"
+    - "^_GLOBAL__.*"

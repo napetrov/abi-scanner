@@ -5,8 +5,8 @@
 name_regexp = ^ccl::detail::.*
 name_regexp = ^ccl::internal::.*
 symbol_name_regexp = ^__.*
-symbol_name_regexp = ^_.*
+symbol_name_regexp = ^_GLOBAL__.*
 
 [suppress_variable]
-name_regexp = ^ccl::detail::.*
+name_regexp = ^ccl::(detail|internal)::.*
 symbol_name_regexp = ^__.*

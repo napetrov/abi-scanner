@@ -27,7 +27,13 @@ def _find_micromamba():
             return candidate
     raise RuntimeError('micromamba not found. Install it or add to PATH.')
 
-MICROMAMBA = _find_micromamba()
+_MICROMAMBA_CACHE = None
+
+def _get_micromamba() -> str:
+    global _MICROMAMBA_CACHE
+    if _MICROMAMBA_CACHE is None:
+        _MICROMAMBA_CACHE = _find_micromamba()
+    return _MICROMAMBA_CACHE
 import tempfile
 import json
 from collections import defaultdict
@@ -109,7 +115,7 @@ def get_package_versions(channel, package):
         List of version strings sorted by packaging.version.Version
     """
     result = subprocess.run(
-        [MICROMAMBA, "search", "-c", channel, package, "--json"],
+        [_get_micromamba(), "search", "-c", channel, package, "--json"],
         capture_output=True, text=True, check=False
     )
     if result.returncode != 0:
@@ -144,7 +150,7 @@ def download_packages(channel: str, package: str, version: str, env_path: Path,
     if verbose:
         print(f"  Downloading: {', '.join(packages)}")
     result = subprocess.run(
-        [MICROMAMBA, "create", "-y", "-r", str(env_path.parent / "root"),
+        [_get_micromamba(), "create", "-y", "-r", str(env_path.parent / "root"),
          "-p", str(env_path), "-c", channel] + packages,
         capture_output=True, text=True, check=False
     )
@@ -380,8 +386,11 @@ def main():
     print(f"Fetching versions for {args.channel}:{args.package}...")
     versions = get_package_versions(args.channel, args.package)
     if args.filter_version:
-        import re as _re
-        versions = [v for v in versions if _re.search(args.filter_version, v)]
+        try:
+            version_re = re.compile(args.filter_version)
+        except re.error as exc:
+            parser.error(f"Invalid --filter-version regex: {exc}")
+        versions = [v for v in versions if version_re.search(v)]
     if not versions:
         print("No versions found")
         return 1
