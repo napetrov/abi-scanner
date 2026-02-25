@@ -41,12 +41,16 @@ def demangle_symbol(symbol: str) -> str:
 
 def extract_namespace(demangled: str) -> str:
     """Extract primary namespace from demangled symbol."""
-    simplified = demangled
-    while True:
-        new_simplified = re.sub(r'<[^>]*>', '', simplified)
-        if new_simplified == simplified:
-            break
-        simplified = new_simplified
+    simplified_chars = []
+    depth = 0
+    for char in demangled:
+        if char == '<':
+            depth += 1
+        elif char == '>':
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            simplified_chars.append(char)
+    simplified = ''.join(simplified_chars)
     simplified = re.sub(r'\([^)]*\)', '', simplified)
     parts = simplified.split('::')
     if len(parts) <= 1:
@@ -467,6 +471,7 @@ def main():
     # JSON Output
     if args.json:
         json_path = Path(args.json)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
         json_data = {
             "channel": args.channel,
             "package": args.package,
@@ -480,7 +485,7 @@ def main():
                 "status": {0: "NO_CHANGE", 4: "COMPATIBLE", 8: "INCOMPATIBLE", 12: "BREAKING"}.get(r["exit_code"], f"UNKNOWN({r['exit_code']})"),
                 "stats": r["stats"]
             }
-            if r.get("stdout") and r["exit_code"] in (8, 12):
+            if r.get("stdout") and r["exit_code"] in (4, 8, 12):
                 lists = extract_symbol_lists(r["stdout"], classifier)
                 comp["symbols"] = {}
                 for cat in ("public", "preview", "internal"):

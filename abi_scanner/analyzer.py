@@ -38,14 +38,18 @@ def extract_namespace(demangled: str) -> str:
         'daal::algorithms::covariance::Batch::compute' -> 'daal::algorithms'
         'std::__detail::__variant::foo' -> 'std'
     """
-    # Remove template args (handle nested like <std::pair<int, int>>)
-    simplified = demangled
-    while True:
-        new_simplified = re.sub(r'<[^>]*>', '', simplified)
-        if new_simplified == simplified:
-            break
-        simplified = new_simplified
-        
+    # Remove template args properly handling nesting
+    simplified_chars = []
+    depth = 0
+    for char in demangled:
+        if char == '<':
+            depth += 1
+        elif char == '>':
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            simplified_chars.append(char)
+    simplified = ''.join(simplified_chars)
+    
     simplified = re.sub(r'\([^)]*\)', '', simplified)
     
     # Extract namespace parts (before last ::)
