@@ -3,6 +3,8 @@
 import subprocess
 from pathlib import Path
 from typing import List, Optional
+import gzip
+import re
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse
@@ -31,6 +33,49 @@ class AptSource(PackageSource):
         """
         self.base_url = base_url
     
+
+    # Default Intel APT index URL
+    INTEL_APT_BASE = "https://apt.repos.intel.com/oneapi"
+    INTEL_APT_INDEX = "https://apt.repos.intel.com/oneapi/dists/all/main/binary-amd64/Packages.gz"
+
+    def resolve_url(self, package_name: str, version: str,
+                    index_url: str = None) -> str:
+        """Resolve the .deb download URL for a package/version from Packages.gz.
+
+        Args:
+            package_name: Exact Debian package name (e.g. intel-oneapi-ccl-2021.17)
+            version: Exact version string (e.g. 2021.17.2-5)
+            index_url: URL to Packages.gz; defaults to Intel APT index
+
+        Returns:
+            Full https:// URL to the .deb file
+
+        Raises:
+            ValueError: if package/version not found in index
+            ValueError: if index_url is not https://
+        """
+        url = index_url or self.INTEL_APT_INDEX
+        if not url.startswith("https://"):
+            raise ValueError(f"Only https:// index URLs allowed, got: {url}")
+        base = "/".join(url.split("/")[:3])  # https://host
+
+        index_data = gzip.decompress(
+            urllib.request.urlopen(url, timeout=60).read()
+        ).decode("utf-8", "ignore")
+
+        for block in index_data.split("\n\n"):
+            pm = re.search(r"^Package: (.+)$", block, re.M)
+            vm = re.search(r"^Version: (.+)$", block, re.M)
+            fm = re.search(r"^Filename: (.+)$", block, re.M)
+            if pm and vm and fm:
+                if pm.group(1).strip() == package_name and vm.group(1).strip() == version:
+                    rel_path = fm.group(1).strip()
+                    return f"{base}/{rel_path}"
+
+        raise ValueError(
+            f"Package {package_name}={version} not found in APT index {url}"
+        )
+
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:
         """Download .deb package.
         

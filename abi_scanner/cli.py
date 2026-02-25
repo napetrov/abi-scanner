@@ -11,7 +11,6 @@ from typing import Optional
 
 from .package_spec import PackageSpec
 from .sources import create_source
-from .sources.factory import _find_micromamba
 from .analyzer import ABIAnalyzer, PublicAPIFilter
 
 
@@ -74,9 +73,14 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
     """
     source = create_source(spec)
 
-    # Local: use path directly
+    # Local: bare .so or directory → use directly; archives → extract first
     if spec.channel == "local":
-        return spec.path
+        local_path = spec.path
+        _archive_exts = {".deb", ".conda", ".gz", ".bz2", ".xz", ".zip"}
+        if local_path.is_file() and local_path.suffix in _archive_exts:
+            extracted = source.extract(local_path, extract_dir)
+            return _find_library(extracted, library_name, spec.package, verbose)
+        return local_path  # .so file or pre-extracted directory
 
     download_dir = work_dir / "download"
     extract_dir = work_dir / "extract"
@@ -85,9 +89,9 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
 
     # Conda channels: create temp env and locate library directly
     if spec.channel in {"conda-forge", "intel"}:
-        mm = _find_micromamba()
+        mm = source.executable  # CondaSource stores the resolved micromamba path
         env_path = work_dir / "env"
-        channel = source.channel if hasattr(source, "channel") else spec.channel
+        channel = source.channel
         cmd = [mm, "create", "-y", "-p", str(env_path), "-c", channel, f"{spec.package}={spec.version}"]
         if verbose:
             print(f"  Creating env: {' '.join(cmd)}", file=sys.stderr)
@@ -100,28 +104,13 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
             print(f"  Library not found in env for {spec}", file=sys.stderr)
         return lib
 
-    # APT: resolve .deb URL from Packages.gz, then download full URL
+    # APT: resolve .deb URL via AptSource.resolve_url(), then download
     if spec.channel == "apt":
-        import gzip as _gz
-        import re as _re
-        import urllib.request as _ur
-        APT_BASE = "https://apt.repos.intel.com/oneapi"
-        index = _gz.decompress(
-            _ur.urlopen(f"{APT_BASE}/dists/all/main/binary-amd64/Packages.gz", timeout=60).read()
-        ).decode("utf-8", "ignore")
-        filename = None
-        for block in index.split("\n\n"):
-            pm = _re.search(r"^Package: (.+)$", block, _re.M)
-            vm = _re.search(r"^Version: (.+)$", block, _re.M)
-            fm = _re.search(r"^Filename: (.+)$", block, _re.M)
-            if pm and vm and fm:
-                if pm.group(1).strip() == spec.package and vm.group(1).strip() == spec.version:
-                    filename = fm.group(1).strip()
-                    break
-        if not filename:
-            print(f"  APT: package {spec.package}={spec.version} not found in index", file=sys.stderr)
+        try:
+            full_url = source.resolve_url(spec.package, spec.version)
+        except ValueError as e:
+            print(f"  APT: {e}", file=sys.stderr)
             return None
-        full_url = f"{APT_BASE}/{filename}"
         if verbose:
             print(f"  Downloading {full_url} ...", file=sys.stderr)
         try:
@@ -224,7 +213,7 @@ def cmd_compare(args):
             print(output)
 
         # Exit code
-        if args.fail_on == "breaking" and result.exit_code >= 12:
+        if args.fail_on == "breaking" and (result.exit_code & 8):
             return result.exit_code
         if args.fail_on == "any" and result.exit_code > 0:
             return result.exit_code
