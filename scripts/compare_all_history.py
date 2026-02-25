@@ -17,6 +17,10 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
+import sys
+
+# Import shared extract_namespace to avoid duplicating regex logic
+from abi_scanner.analyzer import extract_namespace
 
 
 def demangle_symbol(symbol: str) -> str:
@@ -38,31 +42,6 @@ def demangle_symbol(symbol: str) -> str:
         pass
     return symbol
 
-
-def extract_namespace(demangled: str) -> str:
-    """Extract primary namespace from demangled symbol."""
-    simplified_chars = []
-    depth = 0
-    for char in demangled:
-        if char == '<':
-            depth += 1
-        elif char == '>':
-            depth = max(0, depth - 1)
-        elif depth == 0:
-            simplified_chars.append(char)
-    simplified = ''.join(simplified_chars)
-    simplified = re.sub(r'\([^)]*\)', '', simplified)
-    parts = simplified.split('::')
-    if len(parts) <= 1:
-        return "(global)"
-    ns_parts = []
-    for part in parts[:-1]:
-        if part in ('detail', 'internal', 'backend', 'impl', 'v1', 'v2', 'interface1', 'interface2'):
-            break
-        ns_parts.append(part)
-        if len(ns_parts) >= 2:
-            break
-    return '::'.join(ns_parts) if ns_parts else "(global)"
 
 
 class SymbolClassifier:
@@ -324,8 +303,21 @@ def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = Non
 
 def print_details(stdout: str, old_ver: str, new_ver: str,
                   classifier: SymbolClassifier, limit: int = 10) -> None:
-    """Print detailed removed/added public symbol names for a version pair."""
+    """Print detailed removed/added symbols (public, preview, internal) for a version pair."""
     lists = extract_symbol_lists(stdout, classifier)
+
+    def print_grouped(items, action_name):
+        grouped = defaultdict(list)
+        for s in items:
+            grouped[extract_namespace(s)].append(s)
+        
+        print(f"    {action_name} ({len(items)}):")
+        for ns, syms in sorted(grouped.items()):
+            print(f"      {ns}:")
+            for s in syms[:limit]:
+                print(f"        - {s[:78]}")
+            if len(syms) > limit:
+                print(f"        … +{len(syms)-limit} more in {ns}")
 
     print(f"\n  {old_ver} → {new_ver}")
     for cat in ("public", "preview", "internal"):
@@ -336,19 +328,6 @@ def print_details(stdout: str, old_ver: str, new_ver: str,
         
         print(f"  [{cat.upper()}]")
         
-        def print_grouped(items, action_name):
-            grouped = defaultdict(list)
-            for s in items:
-                grouped[extract_namespace(s)].append(s)
-            
-            print(f"    {action_name} ({len(items)}):")
-            for ns, syms in sorted(grouped.items()):
-                print(f"      {ns}:")
-                for s in syms[:limit]:
-                    print(f"        - {s[:78]}")
-                if len(syms) > limit:
-                    print(f"        … +{len(syms)-limit} more in {ns}")
-
         if removed:
             print_grouped(removed, "Removed")
         if added:
