@@ -12,6 +12,22 @@ import argparse
 import os
 import re
 import subprocess
+import shutil as _shutil
+
+def _find_micromamba():
+    """Find micromamba binary: PATH, common locations, or MAMBA_ROOT_PREFIX/bin."""
+    from pathlib import Path
+    for candidate in [
+        _shutil.which('micromamba'),
+        '/home/ubuntu/bin/micromamba',
+        '/usr/local/bin/micromamba',
+        str(__import__("pathlib").Path.home() / "bin" / "micromamba"),
+    ]:
+        if candidate and Path(candidate).exists():
+            return candidate
+    raise RuntimeError('micromamba not found. Install it or add to PATH.')
+
+MICROMAMBA = _find_micromamba()
 import tempfile
 import json
 from collections import defaultdict
@@ -93,7 +109,7 @@ def get_package_versions(channel, package):
         List of version strings sorted by packaging.version.Version
     """
     result = subprocess.run(
-        ["micromamba", "search", "-c", channel, package, "--json"],
+        [MICROMAMBA, "search", "-c", channel, package, "--json"],
         capture_output=True, text=True, check=False
     )
     if result.returncode != 0:
@@ -128,7 +144,7 @@ def download_packages(channel: str, package: str, version: str, env_path: Path,
     if verbose:
         print(f"  Downloading: {', '.join(packages)}")
     result = subprocess.run(
-        ["micromamba", "create", "-y", "-r", str(env_path.parent / "root"),
+        [MICROMAMBA, "create", "-y", "-r", str(env_path.parent / "root"),
          "-p", str(env_path), "-c", channel] + packages,
         capture_output=True, text=True, check=False
     )
@@ -139,7 +155,7 @@ def download_packages(channel: str, package: str, version: str, env_path: Path,
     return True
 
 
-def find_library(env_path: Path, package: str, verbose: bool = False) -> Optional[Path]:
+def find_library(env_path: Path, package: str, library_name: str = None, verbose: bool = False) -> Optional[Path]:
     """Find shared library (.so) in conda environment.
 
     Args:
@@ -150,7 +166,11 @@ def find_library(env_path: Path, package: str, verbose: bool = False) -> Optiona
     Returns:
         Path to library if found, None otherwise
     """
-    lib_patterns = [f"lib{package}.so*", "libonedal.so*"]
+    if library_name:
+        base = library_name.replace('.so', '').lstrip('lib')
+        lib_patterns = [library_name + '*', f'lib{base}.so*']
+    else:
+        lib_patterns = [f'lib{package}.so*', 'libonedal.so*']
     for pattern in lib_patterns:
         for m in env_path.glob(f"**/{pattern}"):
             if m.suffix == ".so" or m.name.count(".so") == 1:
@@ -349,6 +369,8 @@ def main():
     parser.add_argument("--details-limit",  type=int, default=10, help="Max symbols per category (default: 10)")
     parser.add_argument("--json",           help="Path to save results in JSON format")
     parser.add_argument("--verbose",        action="store_true")
+    parser.add_argument("--library-name",   help="Primary .so filename to analyse (e.g. libccl.so, libsycl.so)")
+    parser.add_argument("--filter-version", help="Regex to filter version list (e.g. ^2021)")
 
     args = parser.parse_args()
     cache_dir = Path(args.cache_dir)
@@ -357,6 +379,9 @@ def main():
 
     print(f"Fetching versions for {args.channel}:{args.package}...")
     versions = get_package_versions(args.channel, args.package)
+    if args.filter_version:
+        import re as _re
+        versions = [v for v in versions if _re.search(args.filter_version, v)]
     if not versions:
         print("No versions found")
         return 1
@@ -388,7 +413,7 @@ def main():
                 if not download_packages(args.channel, args.package, ver, env_path,
                                          args.devel_package, args.verbose):
                     continue
-                lib = find_library(env_path, args.package, args.verbose)
+                lib = find_library(env_path, args.package, library_name=args.library_name, verbose=args.verbose)
                 if not lib:
                     if args.verbose:
                         print(f"  Library not found for {ver}")

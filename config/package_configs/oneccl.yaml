@@ -1,0 +1,31 @@
+# config/package_configs/oneccl.yaml
+# Package configuration for Intel oneCCL (Collective Communications Library)
+
+library: oneccl
+primary_lib: libccl.so
+
+sources:
+  intel:
+    channel: https://software.repos.intel.com/python/conda
+    packages:
+      runtime:
+        name: oneccl-cpu
+        contains: [lib]
+      devel:
+        name: oneccl-devel
+        contains: [include]
+    paths:
+      lib: lib
+      include: include/oneapi/ccl
+
+public_namespaces:
+  - ccl
+  - oneapi::ccl
+
+private_patterns:
+  namespace:
+    - ".*::detail::.*"
+    - ".*::internal::.*"
+  symbol:
+    - "^_.*"
+    - "^__.*"
