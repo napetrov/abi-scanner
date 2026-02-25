@@ -1,15 +1,11 @@
 # config/suppressions/compiler.txt
 # Suppressions for Intel DPC++ Compiler Runtime (libsycl) ABI tracking
+# Note: libabigail only reads the LAST value for each key in a section.
+# Multiple patterns must be combined with alternation (|).
 
 [suppress_function]
-name_regexp = ^sycl::.*::detail::.*
-name_regexp = ^sycl::.*::backend::.*
-name_regexp = ^sycl::.*::internal::.*
-symbol_name_regexp = ^_ZN.*detail.*
-symbol_name_regexp = ^_ZN.*internal.*
-symbol_name_regexp = ^_ZN.*backend.*
-symbol_name_regexp = ^__intel_.*
-symbol_name_regexp = ^__.*
+name_regexp = ^sycl::.*(::detail::|::backend::|::internal::).*
+symbol_name_regexp = ^(_ZN.*(detail|internal|backend).*|__intel_.*|__.*)
 
 [suppress_variable]
 name_regexp = ^sycl::.*::detail::.*

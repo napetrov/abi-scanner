@@ -120,7 +120,7 @@ def get_apt_package_versions(pkg_pattern: str,
     """Fetch available versions for packages matching pkg_pattern from Intel APT.
 
     pkg_pattern: regex that matches package names (e.g.
-        r'^intel-oneapi-compiler-dpcpp-cpp-runtime-2025\.\d+$').
+        r'^intel-oneapi-compiler-dpcpp-cpp-runtime-2025\\.\\d+$').
     Returns sorted list of (version, filename) tuples.
     """
     try:
@@ -186,7 +186,8 @@ def download_and_extract_apt(version: str, filename: str, cache_dir: Path,
                     check=True, capture_output=True)
         except Exception as exc:
             print(f'  Extraction failed: {exc}', file=sys.stderr)
-            import shutil as _shutil; _shutil.rmtree(extract_dir, ignore_errors=True)
+            import shutil as _cleanup_shutil
+            _cleanup_shutil.rmtree(extract_dir, ignore_errors=True)
             return None
     return extract_dir
 
@@ -194,16 +195,17 @@ def download_and_extract_apt(version: str, filename: str, cache_dir: Path,
 def find_library_apt(extract_dir: Path, library_name: str,
                      verbose: bool = False) -> Optional[Path]:
     """Find real versioned .so in extracted .deb (not symlinks, not gdb helpers)."""
-    base = library_name.removesuffix('.so').replace('.so', '')
+    base = library_name.removesuffix('.so').removeprefix('lib')
     patterns = [
         f'{library_name}.[0-9]*',   # libccl.so.1.0
-        f'{base}.so.[0-9]*',        # libccl.so.1.0
+        f'lib{base}.so.[0-9]*',     # libccl.so.1.0
         library_name,               # exact match fallback
     ]
     for pat in patterns:
         cands = [
             p for p in extract_dir.rglob(pat)
-            if p.is_file() and not p.name.endswith('.py') and 'debug' not in str(p)
+            if p.is_file() and not p.is_symlink()
+            and not p.name.endswith('.py') and 'debug' not in str(p)
         ]
         if cands:
             chosen = sorted(cands, key=lambda p: len(p.name))[-1]
@@ -496,8 +498,12 @@ def main():
     print(f"Fetching versions for {args.channel}:{args.package}...")
     apt_version_map = {}
     if args.channel == "apt":
+        if not args.library_name:
+            parser.error('--library-name is required for channel=apt (e.g. libsycl.so or libccl.so)')
         apt_index_url = args.apt_base_url.rstrip("/") + "/dists/all/main/binary-amd64/Packages.gz"
-        apt_rows = get_apt_package_versions(args.apt_pkg_pattern or args.package, apt_index_url)
+        if not args.apt_pkg_pattern:
+            parser.error('--apt-pkg-pattern is required for channel=apt (e.g. ^intel-oneapi-compiler-dpcpp-cpp-runtime-2025\\.\\d+$)')
+        apt_rows = get_apt_package_versions(args.apt_pkg_pattern, apt_index_url)
         versions = [v for v,_ in apt_rows]
         apt_version_map = {v:f for v,f in apt_rows}
     else:
