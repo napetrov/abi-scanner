@@ -39,7 +39,7 @@ class AptSource(PackageSource):
     INTEL_APT_INDEX = "https://apt.repos.intel.com/oneapi/dists/all/main/binary-amd64/Packages.gz"
 
     def resolve_url(self, package_name: str, version: str,
-                    index_url: str = None) -> str:
+                    index_url: Optional[str] = None) -> str:
         """Resolve the .deb download URL for a package/version from Packages.gz.
 
         Args:
@@ -59,9 +59,8 @@ class AptSource(PackageSource):
             raise ValueError(f"Only https:// index URLs allowed, got: {url}")
         base = "/".join(url.split("/")[:3])  # https://host
 
-        index_data = gzip.decompress(
-            urllib.request.urlopen(url, timeout=60).read()
-        ).decode("utf-8", "ignore")
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            index_data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
 
         for block in index_data.split("\n\n"):
             pm = re.search(r"^Package: (.+)$", block, re.M)

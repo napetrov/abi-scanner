@@ -78,7 +78,9 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
         local_path = spec.path
         _archive_exts = {".deb", ".conda", ".gz", ".bz2", ".xz", ".zip"}
         if local_path.is_file() and local_path.suffix in _archive_exts:
-            extracted = source.extract(local_path, extract_dir)
+            local_extract_dir = work_dir / "extract"
+            local_extract_dir.mkdir(parents=True, exist_ok=True)
+            extracted = source.extract(local_path, local_extract_dir)
             return _find_library(extracted, library_name, spec.package, verbose)
         return local_path  # .so file or pre-extracted directory
 
