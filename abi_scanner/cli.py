@@ -244,9 +244,74 @@ def cmd_validate(args):
 
 
 def cmd_list(args):
-    print(f"Listing versions for {args.spec}")
-    print("(not yet implemented)")
-    return 1
+    """List available versions for a package spec."""
+    import re as _re
+
+    try:
+        spec = PackageSpec.parse(args.spec, require_version=False)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    source = create_source(spec)
+
+    # Fetch versions
+    try:
+        if spec.channel in {"conda-forge", "intel"}:
+            versions = source.list_versions(spec.package)
+            entries = [(v, None) for v in versions]
+
+        elif spec.channel == "apt":
+            if not args.apt_pkg_pattern:
+                print(
+                    "Error: --apt-pkg-pattern required for apt channel "
+                    "(e.g. ^intel-oneapi-ccl-2021)",
+                    file=sys.stderr,
+                )
+                return 1
+            # Ensure pattern at least mentions the positional package name
+            pkg_hint = spec.package.lower()
+            pat_lower = args.apt_pkg_pattern.lower()
+            if pkg_hint not in pat_lower and pkg_hint not in pat_lower.replace("\\", ""):
+                print(
+                    f"Warning: --apt-pkg-pattern does not appear to mention "
+                    f"package '{spec.package}'; results may be unrelated.",
+                    file=sys.stderr,
+                )
+            entries = source.list_versions(args.apt_pkg_pattern)
+
+        else:
+            print(f"Error: list not supported for channel '{spec.channel}'", file=sys.stderr)
+            return 1
+
+    except Exception as e:
+        print(f"Error fetching versions: {e}", file=sys.stderr)
+        return 1
+
+    if not entries:
+        print(f"No versions found for {spec.channel}:{spec.package}", file=sys.stderr)
+        return 1
+
+    # Optional regex filter
+    if args.filter:
+        try:
+            fre = _re.compile(args.filter)
+        except _re.error as e:
+            print(f"Error: invalid --filter regex: {e}", file=sys.stderr)
+            return 1
+        entries = [(v, f) for v, f in entries if fre.search(v)]
+
+    # Output
+    if args.format == "json":
+        data = [{"version": v, "filename": f} for v, f in entries]
+        print(json.dumps(data, indent=2))
+    else:
+        print(f"Versions for {spec.channel}:{spec.package} ({len(entries)} total):")
+        for v, f in entries:
+            suffix = f"  [{f}]" if f else ""
+            print(f"  {v}{suffix}")
+
+    return 0
 
 
 def create_parser():
@@ -302,10 +367,13 @@ Exit codes:
     val.add_argument("spec")
     val.add_argument("--format", choices=["text", "json"], default="text")
 
-    # list (stub)
+    # list
     lst = subparsers.add_parser("list", help="List available versions for a package")
-    lst.add_argument("spec")
+    lst.add_argument("spec", help="Package spec: channel:package (e.g. intel:oneccl-cpu)")
     lst.add_argument("--format", choices=["text", "json"], default="text")
+    lst.add_argument("--filter", help="Regex to filter version list (e.g. ^2021.14)")
+    lst.add_argument("--apt-pkg-pattern",
+                     help="Regex for APT package names (required for apt channel)")
 
     return parser
 
