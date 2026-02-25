@@ -186,6 +186,7 @@ def download_and_extract_apt(version: str, filename: str, cache_dir: Path,
                     check=True, capture_output=True)
         except Exception as exc:
             print(f'  Extraction failed: {exc}', file=sys.stderr)
+            import shutil as _shutil; _shutil.rmtree(extract_dir, ignore_errors=True)
             return None
     return extract_dir
 
@@ -193,7 +194,7 @@ def download_and_extract_apt(version: str, filename: str, cache_dir: Path,
 def find_library_apt(extract_dir: Path, library_name: str,
                      verbose: bool = False) -> Optional[Path]:
     """Find real versioned .so in extracted .deb (not symlinks, not gdb helpers)."""
-    base = library_name.rstrip('.so').replace('.so', '')
+    base = library_name.removesuffix('.so').replace('.so', '')
     patterns = [
         f'{library_name}.[0-9]*',   # libccl.so.1.0
         f'{base}.so.[0-9]*',        # libccl.so.1.0
@@ -281,13 +282,13 @@ def find_library(env_path: Path, package: str, library_name: str = None, verbose
         Path to library if found, None otherwise
     """
     if library_name:
-        base = library_name.replace('.so', '').lstrip('lib')
-        lib_patterns = [library_name + '*', f'lib{base}.so*']
+        base = library_name.removesuffix('.so').removeprefix('lib')
+        lib_patterns = [library_name + '*', f"lib{base}.so*"]
     else:
         lib_patterns = [f'lib{package}.so*', 'libonedal.so*']
     for pattern in lib_patterns:
         for m in env_path.glob(f"**/{pattern}"):
-            if m.suffix == ".so" or m.name.count(".so") == 1:
+            if (m.suffix == ".so" or m.name.count(".so") == 1) and not m.is_symlink():
                 if verbose:
                     print(f"  Found: {m}")
                 return m
