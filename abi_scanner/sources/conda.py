@@ -48,27 +48,45 @@ class CondaSource(PackageSource):
     def list_versions(self, package: str) -> list:
         """Return sorted list of available versions for a package on this channel.
 
-        Uses micromamba search --json; returns empty list on failure.
+        Uses micromamba search --json.
+        Raises RuntimeError on tool/network failure; returns [] when package not found.
         """
         try:
             result = subprocess.run(
                 [self.executable, "search", "-c", self.channel, package, "--json"],
                 capture_output=True, text=True, check=False, timeout=60,
             )
-            if result.returncode != 0:
-                return []
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"micromamba executable not found: {self.executable!r}"
+            ) from None
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"micromamba search timed out for {self.channel}:{package}"
+            ) from None
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "PackagesNotFoundError" in stderr or "nothing provides" in stderr.lower():
+                return []  # package genuinely absent from channel
+            raise RuntimeError(
+                f"micromamba search failed (rc={result.returncode}): {stderr[-300:]}"
+            )
+
+        try:
             data = json.loads(result.stdout)
-            versions = list({
-                pkg["version"]
-                for pkg in data.get("result", {}).get("pkgs", [])
-            })
-            from packaging.version import Version
-            try:
-                return sorted(versions, key=lambda v: Version(v))
-            except Exception:
-                return sorted(versions)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"micromamba search returned invalid JSON: {exc}") from exc
+
+        versions = list({
+            pkg["version"]
+            for pkg in data.get("result", {}).get("pkgs", [])
+        })
+        from packaging.version import Version
+        try:
+            return sorted(versions, key=lambda v: Version(v))
         except Exception:
-            return []
+            return sorted(versions)
 
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:
         """Download conda package.

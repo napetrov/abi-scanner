@@ -269,6 +269,15 @@ def cmd_list(args):
                     file=sys.stderr,
                 )
                 return 1
+            # Ensure pattern at least mentions the positional package name
+            pkg_hint = spec.package.lower()
+            pat_lower = args.apt_pkg_pattern.lower()
+            if pkg_hint not in pat_lower and pkg_hint not in pat_lower.replace("\\", ""):
+                print(
+                    f"Warning: --apt-pkg-pattern does not appear to mention "
+                    f"package '{spec.package}'; results may be unrelated.",
+                    file=sys.stderr,
+                )
             entries = source.list_versions(args.apt_pkg_pattern)
 
         else:

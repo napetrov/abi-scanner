@@ -104,15 +104,19 @@ class PackageSpec:
         """String representation of the spec."""
         if self.channel == "local":
             return f"local:{self.path}"
+        if self.version is None:
+            return f"{self.channel}:{self.package}"
         return f"{self.channel}:{self.package}={self.version}"
     
     def __repr__(self) -> str:
         """Detailed representation."""
         if self.channel == "local":
             return f"PackageSpec(channel='local', path={self.path})"
+        v = f", version='{self.version}'" if self.version is not None else ""
         return (
             f"PackageSpec(channel='{self.channel}', "
-            f"package='{self.package}', version='{self.version}')"
+            f"package='{self.package}'"
+            f"{v})"
         )
 
 
