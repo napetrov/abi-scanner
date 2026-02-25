@@ -75,6 +75,38 @@ class AptSource(PackageSource):
             f"Package {package_name}={version} not found in APT index {url}"
         )
 
+
+    def list_versions(self, pkg_pattern: str, index_url: Optional[str] = None) -> list:
+        """Return sorted list of (version, filename) tuples for packages matching pkg_pattern.
+
+        pkg_pattern: extended POSIX regex matching Debian package names.
+        Returns list of (version_str, filename_str) sorted by version.
+        """
+        import re as _re
+        url = index_url or self.INTEL_APT_INDEX
+        if not url.startswith("https://"):
+            raise ValueError(f"Only https:// index URLs allowed, got: {url}")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                index_data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
+        except Exception as e:
+            raise RuntimeError(f"Failed to fetch APT index: {e}") from e
+
+        pat = _re.compile(pkg_pattern)
+        entries = []
+        for block in index_data.split("\n\n"):
+            pm = _re.search(r"^Package: (.+)$", block, _re.M)
+            vm = _re.search(r"^Version: (.+)$", block, _re.M)
+            fm = _re.search(r"^Filename: (.+)$", block, _re.M)
+            if pm and vm and fm and pat.search(pm.group(1).strip()):
+                entries.append((vm.group(1).strip(), fm.group(1).strip()))
+
+        try:
+            from packaging.version import Version
+            return sorted(entries, key=lambda t: Version(t[0]))
+        except Exception:
+            return sorted(entries)
+
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:
         """Download .deb package.
         

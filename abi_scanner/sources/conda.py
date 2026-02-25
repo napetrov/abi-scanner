@@ -44,6 +44,32 @@ class CondaSource(PackageSource):
                 f"Install it: https://mamba.readthedocs.io/en/latest/installation.html"
             ) from None
     
+
+    def list_versions(self, package: str) -> list:
+        """Return sorted list of available versions for a package on this channel.
+
+        Uses micromamba search --json; returns empty list on failure.
+        """
+        try:
+            result = subprocess.run(
+                [self.executable, "search", "-c", self.channel, package, "--json"],
+                capture_output=True, text=True, check=False, timeout=60,
+            )
+            if result.returncode != 0:
+                return []
+            data = json.loads(result.stdout)
+            versions = list({
+                pkg["version"]
+                for pkg in data.get("result", {}).get("pkgs", [])
+            })
+            from packaging.version import Version
+            try:
+                return sorted(versions, key=lambda v: Version(v))
+            except Exception:
+                return sorted(versions)
+        except Exception:
+            return []
+
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:
         """Download conda package.
         

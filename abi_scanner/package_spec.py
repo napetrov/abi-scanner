@@ -26,7 +26,7 @@ class PackageSpec:
     path: Optional[Path] = None
     
     @classmethod
-    def parse(cls, spec: str) -> "PackageSpec":
+    def parse(cls, spec: str, require_version: bool = True) -> "PackageSpec":
         """Parse a package spec string.
         
         Format: channel:package=version
@@ -44,7 +44,7 @@ class PackageSpec:
         if not spec or ":" not in spec:
             raise ValueError(
                 f"Invalid package spec '{spec}'. "
-                f"Expected format: channel:package=version"
+                f"Expected format: channel:package[=version]"
             )
         
         channel, rest = spec.split(":", 1)
@@ -74,20 +74,24 @@ class PackageSpec:
                 path=path
             )
         
-        # Standard case: channel:package=version
+        # Standard case: channel:package=version (version optional when require_version=False)
         if "=" not in rest:
-            raise ValueError(
-                f"Invalid package spec '{spec}'. "
-                f"Expected format: channel:package=version"
-            )
-        
-        package, version = rest.split("=", 1)
+            if require_version:
+                raise ValueError(
+                    f"Invalid package spec '{spec}'. "
+                    f"Expected format: channel:package=version"
+                )
+            package = rest.strip()
+            version = None
+        else:
+            package, version = rest.split("=", 1)
         package = package.strip()
-        version = version.strip()
+        if version is not None:
+            version = version.strip()
         
         if not package:
             raise ValueError(f"Empty package name in spec '{spec}'")
-        if not version:
+        if require_version and not version:
             raise ValueError(f"Empty version in spec '{spec}'")
         
         return cls(
