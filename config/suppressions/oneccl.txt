@@ -1,0 +1,12 @@
+# config/suppressions/oneccl.txt
+# Suppressions for Intel oneCCL ABI tracking
+
+[suppress_function]
+name_regexp = ^ccl::detail::.*
+name_regexp = ^ccl::internal::.*
+symbol_name_regexp = ^__.*
+symbol_name_regexp = ^_GLOBAL__.*
+
+[suppress_variable]
+name_regexp = ^ccl::(detail|internal)::.*
+symbol_name_regexp = ^__.*
