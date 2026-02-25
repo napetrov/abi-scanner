@@ -13,6 +13,8 @@ import os
 import re
 import subprocess
 import tempfile
+import json
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
 
@@ -35,6 +37,23 @@ def demangle_symbol(symbol: str) -> str:
     except Exception:
         pass
     return symbol
+
+
+def extract_namespace(demangled: str) -> str:
+    """Extract primary namespace from demangled symbol."""
+    simplified = re.sub(r'<[^>]*>', '', demangled)
+    simplified = re.sub(r'\([^)]*\)', '', simplified)
+    parts = simplified.split('::')
+    if len(parts) <= 1:
+        return "(global)"
+    ns_parts = []
+    for part in parts[:-1]:
+        if part in ('detail', 'internal', 'backend', 'impl', 'v1', 'v2', 'interface1', 'interface2'):
+            break
+        ns_parts.append(part)
+        if len(ns_parts) >= 2:
+            break
+    return '::'.join(ns_parts) if ns_parts else "(global)"
 
 
 class SymbolClassifier:
@@ -297,15 +316,7 @@ def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = Non
 
 def print_details(stdout: str, old_ver: str, new_ver: str,
                   classifier: SymbolClassifier, limit: int = 10) -> None:
-    """Print detailed removed/added public symbol names for a version pair.
-
-    Args:
-        stdout: Captured abidiff stdout for this pair
-        old_ver: Old version string
-        new_ver: New version string
-        classifier: SymbolClassifier instance
-        limit: Maximum symbols to show per category
-    """
+    """Print detailed removed/added public symbol names for a version pair."""
     lists = extract_symbol_lists(stdout, classifier)
 
     print(f"\n  {old_ver} → {new_ver}")
@@ -314,19 +325,26 @@ def print_details(stdout: str, old_ver: str, new_ver: str,
         added   = lists[cat]["added"]
         if not removed and not added:
             continue
+        
         print(f"  [{cat.upper()}]")
+        
+        def print_grouped(items, action_name):
+            grouped = defaultdict(list)
+            for s in items:
+                grouped[extract_namespace(s)].append(s)
+            
+            print(f"    {action_name} ({len(items)}):")
+            for ns, syms in sorted(grouped.items()):
+                print(f"      {ns}:")
+                for s in syms[:limit]:
+                    print(f"        - {s[:78]}")
+                if len(syms) > limit:
+                    print(f"        … +{len(syms)-limit} more in {ns}")
+
         if removed:
-            print(f"    Removed ({len(removed)}):")
-            for s in removed[:limit]:
-                print(f"      - {s[:78]}")
-            if len(removed) > limit:
-                print(f"      … +{len(removed)-limit} more")
+            print_grouped(removed, "Removed")
         if added:
-            print(f"    Added ({len(added)}):")
-            for s in added[:limit]:
-                print(f"      + {s[:78]}")
-            if len(added) > limit:
-                print(f"      … +{len(added)-limit} more")
+            print_grouped(added, "Added")
 
 
 def main():
@@ -342,12 +360,13 @@ def main():
     parser.add_argument("--track-preview",  action="store_true", help="Track preview/experimental separately")
     parser.add_argument("--details",        action="store_true", help="Show symbol names for breaking pairs")
     parser.add_argument("--details-limit",  type=int, default=10, help="Max symbols per category (default: 10)")
+    parser.add_argument("--json",           help="Path to save results in JSON format")
     parser.add_argument("--verbose",        action="store_true")
 
     args = parser.parse_args()
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    classifier = SymbolClassifier() if args.track_preview or getattr(args, "details", False) else None
+    classifier = SymbolClassifier() if args.track_preview or getattr(args, "details", False) or getattr(args, "json", False) else None
 
     print(f"Fetching versions for {args.channel}:{args.package}...")
     versions = get_package_versions(args.channel, args.package)
@@ -435,11 +454,41 @@ def main():
     if args.details and breaking:
         print()
         print("=" * 60)
-        print(f"DETAILS (top {args.details_limit} symbols per category)")
+        print(f"DETAILS (top {args.details_limit} symbols per category per namespace)")
         print("=" * 60)
         for r in breaking:
             print_details(r["stdout"], r["old"], r["new"],
                           classifier, args.details_limit)
+
+    # JSON Output
+    if args.json:
+        json_path = Path(args.json)
+        json_data = {
+            "channel": args.channel,
+            "package": args.package,
+            "comparisons": []
+        }
+        for r in results:
+            comp = {
+                "old_version": r["old"],
+                "new_version": r["new"],
+                "exit_code": r["exit_code"],
+                "status": {0: "NO_CHANGE", 4: "COMPATIBLE", 8: "INCOMPATIBLE", 12: "BREAKING"}.get(r["exit_code"], f"UNKNOWN({r['exit_code']})"),
+                "stats": r["stats"]
+            }
+            if r.get("stdout") and r["exit_code"] in (8, 12):
+                lists = extract_symbol_lists(r["stdout"], classifier)
+                comp["symbols"] = {}
+                for cat in ("public", "preview", "internal"):
+                    comp["symbols"][cat] = {
+                        "removed": lists[cat]["removed"],
+                        "added": lists[cat]["added"]
+                    }
+            json_data["comparisons"].append(comp)
+
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(json_data, f, indent=2)
+        print(f"\nSaved results to {json_path}")
 
 
 if __name__ == "__main__":
