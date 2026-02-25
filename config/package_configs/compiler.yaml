@@ -1,0 +1,27 @@
+# config/package_configs/compiler.yaml
+# Package configuration for Intel DPC++ Compiler Runtime (libsycl)
+
+library: compiler
+primary_lib: libsycl.so
+
+sources:
+  apt:
+    base_url: https://apt.repos.intel.com/oneapi
+    # Versioned package pattern: intel-oneapi-compiler-dpcpp-cpp-runtime-{major.minor}
+    pkg_pattern: "^intel-oneapi-compiler-dpcpp-cpp-runtime-2025\\.\\d+$"
+    paths:
+      lib: opt/intel/oneapi/compiler/{major_minor}/lib
+
+public_namespaces:
+  - sycl
+  - cl
+
+private_patterns:
+  namespace:
+    - ".*::detail::.*"
+    - ".*::backend::.*"
+    - ".*::internal::.*"
+  symbol:
+    - "^_.*"
+    - "^__.*"
+    - "^mkl_.*"
