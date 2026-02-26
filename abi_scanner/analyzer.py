@@ -185,7 +185,6 @@ class ABIComparisonResult:
     
     def group_by_tier_and_ns(self, symbols: list) -> dict:
         """Group symbols by tier (public/preview/internal) then by namespace."""
-        from collections import defaultdict
         tiers: dict = {
             "public": defaultdict(list),
             "preview": defaultdict(list),
@@ -221,14 +220,16 @@ class ABIComparisonResult:
             return out
 
         lines = []
+        # Precompute once — each call demangles all symbols, avoid repeating per tier
+        removed_by_tier = self.group_by_tier_and_ns(self.public_removed) if self.public_removed else {}
+        added_by_tier   = self.group_by_tier_and_ns(self.public_added)   if self.public_added   else {}
+        changed_by_tier = self.group_by_tier_and_ns(self.public_changed) if self.public_changed else {}
+
         for tier in TIER_ORDER:
             h = TIER_HEADER[tier]
-            if self.public_removed:
-                lines.extend(_fmt_group(h["removed"], "-", self.group_by_tier_and_ns(self.public_removed).get(tier, {})))
-            if self.public_added:
-                lines.extend(_fmt_group(h["added"], "+", self.group_by_tier_and_ns(self.public_added).get(tier, {})))
-            if self.public_changed:
-                lines.extend(_fmt_group(h["changed"], "~", self.group_by_tier_and_ns(self.public_changed).get(tier, {})))
+            lines.extend(_fmt_group(h["removed"], "-", removed_by_tier.get(tier, {})))
+            lines.extend(_fmt_group(h["added"],   "+", added_by_tier.get(tier, {})))
+            lines.extend(_fmt_group(h["changed"],  "~", changed_by_tier.get(tier, {})))
 
         return "\n".join(lines) if lines else ""
     

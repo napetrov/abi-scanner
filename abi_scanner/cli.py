@@ -562,15 +562,6 @@ def cmd_validate(args):
             "compliant": ok,
             "violations": len(violations),
             "strict": args.strict,
-            "rows": [
-                {
-                    "from": old_v, "to": new_v, "kind": kind,
-                    "exit_code": r.exit_code if r else None,
-                    "verdict": VERDICT.get(r.exit_code, f"rc={r.exit_code}") if r else "SKIPPED",
-                    "compliant": c,
-                }
-                for old_v, new_v, kind, r, c in rows
-            ],
             "violation_details": [
                     {
                         "from": e["from"], "to": e["to"], "kind": e["kind"],
@@ -634,7 +625,7 @@ def cmd_validate(args):
                 print(f"  ❌ {v['from']} → {v['to']}  [{v['kind'].upper()}]"
                       f"  {v['verdict']}  (-{v['functions_removed']} +{v['functions_added']})")
                 if v.get("_result"):
-                    det = v["_result"].format_details(max_per_ns=args.details_limit or 9999)
+                    det = v["_result"].format_details(max_per_ns=args.details_limit)
                     if det:
                         for dline in det.splitlines():
                             print(f"    {dline}")
