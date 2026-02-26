@@ -11,7 +11,7 @@ from typing import Optional
 
 from .package_spec import PackageSpec
 from .sources import create_source
-from .analyzer import ABIAnalyzer, PublicAPIFilter
+from .analyzer import ABIAnalyzer, PublicAPIFilter, ABIVerdict, ABIComparisonResult
 
 
 
@@ -45,23 +45,28 @@ def _find_library(search_dir: Path, library_name: Optional[str],
 
 
 def _generate_baseline(lib_path: Path, output_path: Path,
-                        verbose: bool = False) -> bool:
-    """Run abidw on a library and save the .abi baseline."""
+                        verbose: bool = False) -> "tuple[bool, str]":
+    """Run abidw on a library and save the .abi baseline.
+
+    Returns (success, failure_reason). failure_reason is empty on success.
+    Captures abidw stderr to diagnose crashes (e.g. libabigail DWARF assertion).
+    """
     abidw = shutil.which("abidw")
     if not abidw:
-        print("Error: abidw not found in PATH", file=sys.stderr)
-        return False
+        return False, "abidw not found in PATH"
 
     cmd = [abidw, "--out-file", str(output_path), str(lib_path)]
-    # Note: suppressions apply only to abidiff, not abidw
     if verbose:
         print(f"  abidw: {lib_path.name}", file=sys.stderr)
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"  abidw failed: {result.stderr[-200:]}", file=sys.stderr)
-        return False
-    return True
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    # abidw may exit 0 but crash via assertion (libabigail DWARF bug) — check output file too
+    if r.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
+        stderr_tail = r.stderr.strip()[-300:] if r.stderr.strip() else "(no output)"
+        reason = f"abidw rc={r.returncode}: {stderr_tail}"
+        print(f"  abidw failed [{lib_path.name}]: {stderr_tail}", file=sys.stderr)
+        return False, reason
+    return True, ""
 
 
 def _download_and_prepare(spec: PackageSpec, work_dir: Path,
@@ -142,6 +147,60 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
     return lib
 
 
+def _is_so_file(p: Path) -> bool:
+    """True if path is a .so library file rather than an .abi baseline."""
+    return '.so' in p.name and not p.name.endswith('.abi')
+
+
+def _symbols_only_compare(old_lib: Path, new_lib: Path) -> "Optional[ABIComparisonResult]":
+    """Symbol-table diff via nm -D — fallback when abidw crashes (e.g. libabigail DWARF bug).
+
+    Returns ABIComparisonResult with symbol-level changes. No type information.
+    Result includes a note in stdout indicating this is a fallback comparison.
+    """
+    def _get_syms(lib: Path) -> "Optional[dict]":
+        r = subprocess.run(["nm", "-D", "--defined-only", str(lib)],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        syms: dict = {}
+        for line in r.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) == 3 and parts[1] in ("T", "D", "B", "V", "W", "i", "I"):
+                syms[parts[2]] = parts[1]
+        return syms
+
+    old_syms = _get_syms(old_lib)
+    new_syms = _get_syms(new_lib)
+    if old_syms is None or new_syms is None:
+        return None
+
+    removed = [s for s in old_syms if s not in new_syms]
+    added   = [s for s in new_syms if s not in old_syms]
+    changed = [s for s in old_syms if s in new_syms and old_syms[s] != new_syms[s]]
+
+    if removed or changed:
+        verdict, exit_code = ABIVerdict.BREAKING, 12
+    elif added:
+        verdict, exit_code = ABIVerdict.COMPATIBLE, 4
+    else:
+        verdict, exit_code = ABIVerdict.NO_CHANGE, 0
+
+    return ABIComparisonResult(
+        verdict=verdict,
+        exit_code=exit_code,
+        baseline_old=str(old_lib),
+        baseline_new=str(new_lib),
+        functions_removed=len(removed),
+        functions_changed=len(changed),
+        functions_added=len(added),
+        public_removed=removed,
+        public_changed=changed,
+        public_added=added,
+        stdout="[nm-D fallback: abidw unavailable — symbol names only, no type info]",
+    )
+
+
 def cmd_compare(args):
     """Execute compare command."""
     try:
@@ -173,17 +232,24 @@ def cmd_compare(args):
             old_abi = tmp / "old.abi"
             new_abi = tmp / "new.abi"
 
-            if not _generate_baseline(old_lib, old_abi, args.verbose):
-                print("Error: abidw failed for old version", file=sys.stderr)
-                return 1
-            if not _generate_baseline(new_lib, new_abi, args.verbose):
-                print("Error: abidw failed for new version", file=sys.stderr)
-                return 1
+            _ok_old, _reason_old = _generate_baseline(old_lib, old_abi, args.verbose)
+            old_baseline = old_abi if _ok_old else old_lib
+            _ok_new, _reason_new = _generate_baseline(new_lib, new_abi, args.verbose)
+            new_baseline = new_abi if _ok_new else new_lib
 
-            # Compare
+            # Compare (nm-D fallback when abidw fails for either side)
             analyzer = ABIAnalyzer(suppressions=suppressions)
             api_filter = PublicAPIFilter()
-            result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
+            if _is_so_file(old_baseline) or _is_so_file(new_baseline):
+                if args.verbose:
+                    reason = _reason_old if not _ok_old else _reason_new
+                    print(f"  ⚠ abidw failed ({reason}), falling back to nm-D", file=sys.stderr)
+                result = _symbols_only_compare(old_baseline, new_baseline)
+                if result is None:
+                    print("Error: nm-D fallback failed", file=sys.stderr)
+                    return 1
+            else:
+                result = analyzer.compare(old_baseline, new_baseline, api_filter, api_filter)
 
         # Output
         if args.format == "json":
@@ -251,9 +317,8 @@ def cmd_compatible(args):
             all_versions = source.list_versions(base_spec.package)
         elif base_spec.channel == "apt":
             if not args.apt_pkg_pattern:
-                print("Error: --apt-pkg-pattern required for apt channel", file=sys.stderr)
-                return 1
-            all_versions = [v for v, _ in source.list_versions(args.apt_pkg_pattern)]
+                args.apt_pkg_pattern = f"^{_re.escape(base_spec.package)}$"
+            all_versions = [v for v, _f, _pkg in source.list_versions(args.apt_pkg_pattern)]
         else:
             print(f"Error: compatible not supported for channel '{base_spec.channel}'", file=sys.stderr)
             return 1
@@ -310,8 +375,9 @@ def cmd_compatible(args):
             print(f"Error: could not obtain library for {base_spec}", file=sys.stderr)
             return 1
         base_abi = tmp / "base.abi"
-        if not _generate_baseline(base_lib, base_abi, args.verbose):
-            print("Error: abidw failed for base version", file=sys.stderr)
+        _ok, _reason = _generate_baseline(base_lib, base_abi, args.verbose)
+        if not _ok:
+            print(f"Error: {_reason}", file=sys.stderr)
             return 1
 
         analyzer = ABIAnalyzer(suppressions=suppressions)
@@ -333,7 +399,10 @@ def cmd_compatible(args):
                 continue
 
             new_abi = tmp / f"v{idx}.abi"
-            if not _generate_baseline(new_lib, new_abi, args.verbose):
+            _ok, _reason = _generate_baseline(new_lib, new_abi, args.verbose)
+            if not _ok:
+                if args.verbose:
+                    print(f"  abidw failed for {ver}: {_reason}", file=sys.stderr)
                 results.append((ver, None))
                 continue
 
@@ -424,9 +493,10 @@ def cmd_validate(args):
             all_versions = source.list_versions(spec.package)
         elif spec.channel == "apt":
             if not args.apt_pkg_pattern:
-                print("Error: --apt-pkg-pattern required for apt channel", file=sys.stderr)
-                return 1
-            all_versions = [v for v, _ in source.list_versions(args.apt_pkg_pattern)]
+                args.apt_pkg_pattern = f"^{_re.escape(spec.package)}$"
+            _apt_triples = source.list_versions(args.apt_pkg_pattern)
+            _apt_version_to_pkg = {v: pkg for v, _f, pkg in _apt_triples}
+            all_versions = [v for v, _f, _pkg in _apt_triples]
         else:
             print(f"Error: validate not supported for channel '{spec.channel}'", file=sys.stderr)
             return 1
@@ -497,24 +567,34 @@ def cmd_validate(args):
         analyzer = ABIAnalyzer(suppressions=suppressions)
         api_filter = PublicAPIFilter()
 
-        # Cache baselines: version_str → Path|None
-        abi_cache: dict = {}
+        # Cache baselines: (pkg_name, ver_str) → Path|None  (avoids aliasing when
+        # different APT packages share the same version string)
+        abi_cache: dict[tuple, Optional[Path]] = {}
+        abi_reason_cache: dict[tuple, str] = {}
+
+        _apt_version_to_pkg = locals().get("_apt_version_to_pkg", {})
 
         def get_abi(ver_str: str, idx: int) -> "Optional[Path]":
-            if ver_str in abi_cache:
-                return abi_cache[ver_str]
+            pkg_name = _apt_version_to_pkg.get(ver_str, spec.package)
+            key = (pkg_name, ver_str)
+            if key in abi_cache:
+                return abi_cache[key]
             vspec = PackageSpec(
-                channel=spec.channel, package=spec.package, version=ver_str
+                channel=spec.channel, package=pkg_name, version=ver_str
             )
             lib = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name, args.verbose)
             if not lib:
-                abi_cache[ver_str] = None
+                abi_cache[key] = None
+                abi_reason_cache[key] = "library not found or download failed"
                 return None
             abi_path = tmp / f"{idx}.abi"
-            if not _generate_baseline(lib, abi_path, args.verbose):
-                abi_cache[ver_str] = None
-                return None
-            abi_cache[ver_str] = abi_path
+            _ok_abi, _abidw_reason = _generate_baseline(lib, abi_path, args.verbose)
+            if not _ok_abi:
+                # nm-D fallback: store .so path so compare loop can use nm -D
+                abi_cache[key] = lib
+                abi_reason_cache[key] = _abidw_reason
+                return lib
+            abi_cache[key] = abi_path
             return abi_path
 
         for i in range(len(parsed) - 1):
@@ -526,11 +606,28 @@ def cmd_validate(args):
             new_abi = get_abi(new_v, i * 2 + 1)
 
             if old_abi is None or new_abi is None:
-                skipped.append({"from": old_v, "to": new_v, "kind": kind})
+                if old_abi is None:
+                    old_pkg = _apt_version_to_pkg.get(old_v, spec.package)
+                    reason = abi_reason_cache.get((old_pkg, old_v))
+                else:
+                    new_pkg = _apt_version_to_pkg.get(new_v, spec.package)
+                    reason = abi_reason_cache.get((new_pkg, new_v))
+                skipped.append({"from": old_v, "to": new_v, "kind": kind, "reason": reason or "library not found or abidw failed"})
                 rows.append((old_v, new_v, kind, None, None))
                 continue
 
-            result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
+            # nm-D fallback when get_abi returned .so (abidw crashed)
+            if _is_so_file(old_abi) or _is_so_file(new_abi):
+                result = _symbols_only_compare(old_abi, new_abi)
+                if result is None:
+                    skipped.append({"from": old_v, "to": new_v, "kind": kind,
+                                    "reason": "nm-D fallback also failed"})
+                    rows.append((old_v, new_v, kind, None, None))
+                    continue
+                if args.verbose:
+                    print(f"  ⚠ nm-D fallback: {old_v}→{new_v}", file=sys.stderr)
+            else:
+                result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
 
             # Compliance check
             if args.strict:
@@ -558,6 +655,7 @@ def cmd_validate(args):
     if args.format == "json":
         out = {
             "spec": str(spec),
+            "library": library_name or "(auto-detect)",
             "total_transitions": total,
             "compliant": ok,
             "violations": len(violations),
@@ -601,12 +699,17 @@ def cmd_validate(args):
         print(json.dumps(out, indent=2))
     else:
         mode = "strict" if args.strict else "lenient"
-        print(f"SemVer compliance report — {spec}  [{mode} mode]")
+        lib_label = f" ({library_name})" if library_name else ""
+        print(f"SemVer compliance report — {spec}{lib_label}  [{mode} mode]")
         print(f"{'From':<22} {'To':<22} {'Type':<8} {'Status'}")
         print("-" * 75)
+        # build a quick lookup: (old_v, new_v) → reason
+        _skip_reasons = {(sk["from"], sk["to"]): sk.get("reason", "library not found or abidw failed")
+                         for sk in skipped}
         for old_v, new_v, kind, result, compliant in rows:
             if result is None:
-                line = "  SKIPPED"
+                reason = _skip_reasons.get((old_v, new_v), "unknown")
+                line = f"  ⚠️  SKIPPED ({reason})"
             else:
                 icon = ICON.get(result.exit_code, "?")
                 verdict = VERDICT.get(result.exit_code, f"rc={result.exit_code}")
@@ -614,7 +717,8 @@ def cmd_validate(args):
                 stats = ""
                 if result.functions_removed or result.functions_added:
                     stats = f"  (-{result.functions_removed} +{result.functions_added})"
-                line = f"  {icon} {kind:<8} {verdict}{stats}{flag}"
+                tool = "[nm-D]" if "[nm-D fallback" in (result.stdout or "") else "[abidiff]"
+                line = f"  {icon} {kind:<8} {verdict}{stats}  {tool}{flag}"
             print(f"  {old_v:<22}{new_v:<22}{line}")
         print()
         pct = int(100 * ok / total) if total else 0
@@ -629,13 +733,17 @@ def cmd_validate(args):
                     if det:
                         for dline in det.splitlines():
                             print(f"    {dline}")
+        elif total == 0:
+            print("⚠️  All transitions skipped — check package name, library name, and channel config.")
         else:
             print("No violations found. ✅")
 
     if skipped:
-        print(f"\nWarning: {len(skipped)} transition(s) skipped (library not found or abidw failed):")
+        out_stream = sys.stderr if args.format == "json" else sys.stdout
+        print(f"\nWarning: {len(skipped)} transition(s) skipped:", file=out_stream)
         for sk in skipped:
-            print(f"  ⚠️  {sk['from']} -> {sk['to']}  [{sk['kind'].upper()}]")
+            reason = sk.get("reason", "library not found or abidw failed")
+            print(f"  ⚠️  {sk['from']} -> {sk['to']}  [{sk['kind'].upper()}]  — {reason}", file=out_stream)
         if args.fail_on != "none":
             print("  Note: skipped transitions are NOT counted as violations.", file=sys.stderr)
 
@@ -679,7 +787,7 @@ def cmd_list(args):
                     f"package '{spec.package}'; results may be unrelated.",
                     file=sys.stderr,
                 )
-            entries = source.list_versions(args.apt_pkg_pattern)
+            entries = [(v, f) for v, f, _pkg in source.list_versions(args.apt_pkg_pattern)]
 
         else:
             print(f"Error: list not supported for channel '{spec.channel}'", file=sys.stderr)
