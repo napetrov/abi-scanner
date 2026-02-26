@@ -234,17 +234,7 @@ def cmd_compare(args):
             # Compare
             analyzer = ABIAnalyzer(suppressions=suppressions)
             api_filter = PublicAPIFilter()
-            if _is_so_file(old_abi) or _is_so_file(new_abi):
-                result = _symbols_only_compare(old_abi, new_abi)
-                if result is None:
-                    skipped.append({"from": old_v, "to": new_v, "kind": kind,
-                                    "reason": "nm-D fallback also failed"})
-                    rows.append((old_v, new_v, kind, None, None))
-                    continue
-                if args.verbose:
-                    print(f"  ⚠ nm-D fallback: {old_v}→{new_v}", file=sys.stderr)
-            else:
-                result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
+            result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
 
         # Output
         if args.format == "json":
@@ -594,7 +584,18 @@ def cmd_validate(args):
                 rows.append((old_v, new_v, kind, None, None))
                 continue
 
-            result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
+            # nm-D fallback when get_abi returned .so (abidw crashed)
+            if _is_so_file(old_abi) or _is_so_file(new_abi):
+                result = _symbols_only_compare(old_abi, new_abi)
+                if result is None:
+                    skipped.append({"from": old_v, "to": new_v, "kind": kind,
+                                    "reason": "nm-D fallback also failed"})
+                    rows.append((old_v, new_v, kind, None, None))
+                    continue
+                if args.verbose:
+                    print(f"  ⚠ nm-D fallback: {old_v}→{new_v}", file=sys.stderr)
+            else:
+                result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
 
             # Compliance check
             if args.strict:
@@ -622,6 +623,7 @@ def cmd_validate(args):
     if args.format == "json":
         out = {
             "spec": str(spec),
+            "library": library_name or "(auto-detect)",
             "total_transitions": total,
             "compliant": ok,
             "violations": len(violations),
@@ -665,7 +667,8 @@ def cmd_validate(args):
         print(json.dumps(out, indent=2))
     else:
         mode = "strict" if args.strict else "lenient"
-        print(f"SemVer compliance report — {spec}  [{mode} mode]")
+        lib_label = f" ({library_name})" if library_name else ""
+        print(f"SemVer compliance report — {spec}{lib_label}  [{mode} mode]")
         print(f"{'From':<22} {'To':<22} {'Type':<8} {'Status'}")
         print("-" * 75)
         for old_v, new_v, kind, result, compliant in rows:
