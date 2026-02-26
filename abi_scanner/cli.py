@@ -45,23 +45,28 @@ def _find_library(search_dir: Path, library_name: Optional[str],
 
 
 def _generate_baseline(lib_path: Path, output_path: Path,
-                        verbose: bool = False) -> bool:
-    """Run abidw on a library and save the .abi baseline."""
+                        verbose: bool = False) -> "tuple[bool, str]":
+    """Run abidw on a library and save the .abi baseline.
+
+    Returns (success, failure_reason). failure_reason is empty on success.
+    Captures abidw stderr to diagnose crashes (e.g. libabigail DWARF assertion).
+    """
     abidw = shutil.which("abidw")
     if not abidw:
-        print("Error: abidw not found in PATH", file=sys.stderr)
-        return False
+        return False, "abidw not found in PATH"
 
     cmd = [abidw, "--out-file", str(output_path), str(lib_path)]
-    # Note: suppressions apply only to abidiff, not abidw
     if verbose:
         print(f"  abidw: {lib_path.name}", file=sys.stderr)
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"  abidw failed: {result.stderr[-200:]}", file=sys.stderr)
-        return False
-    return True
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    # abidw may exit 0 but crash via assertion (libabigail DWARF bug) — check output file too
+    if r.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
+        stderr_tail = r.stderr.strip()[-300:] if r.stderr.strip() else "(no output)"
+        reason = f"abidw rc={r.returncode}: {stderr_tail}"
+        print(f"  abidw failed [{lib_path.name}]: {stderr_tail}", file=sys.stderr)
+        return False, reason
+    return True, ""
 
 
 def _download_and_prepare(spec: PackageSpec, work_dir: Path,
@@ -224,11 +229,13 @@ def cmd_compare(args):
             old_abi = tmp / "old.abi"
             new_abi = tmp / "new.abi"
 
-            if not _generate_baseline(old_lib, old_abi, args.verbose):
-                print("Error: abidw failed for old version", file=sys.stderr)
+            _ok, _reason = _generate_baseline(old_lib, old_abi, args.verbose)
+            if not _ok:
+                print(f"Error: {_reason}", file=sys.stderr)
                 return 1
-            if not _generate_baseline(new_lib, new_abi, args.verbose):
-                print("Error: abidw failed for new version", file=sys.stderr)
+            _ok, _reason = _generate_baseline(new_lib, new_abi, args.verbose)
+            if not _ok:
+                print(f"Error: {_reason}", file=sys.stderr)
                 return 1
 
             # Compare
@@ -360,8 +367,9 @@ def cmd_compatible(args):
             print(f"Error: could not obtain library for {base_spec}", file=sys.stderr)
             return 1
         base_abi = tmp / "base.abi"
-        if not _generate_baseline(base_lib, base_abi, args.verbose):
-            print("Error: abidw failed for base version", file=sys.stderr)
+        _ok, _reason = _generate_baseline(base_lib, base_abi, args.verbose)
+        if not _ok:
+            print(f"Error: {_reason}", file=sys.stderr)
             return 1
 
         analyzer = ABIAnalyzer(suppressions=suppressions)
@@ -383,7 +391,10 @@ def cmd_compatible(args):
                 continue
 
             new_abi = tmp / f"v{idx}.abi"
-            if not _generate_baseline(new_lib, new_abi, args.verbose):
+            _ok, _reason = _generate_baseline(new_lib, new_abi, args.verbose)
+            if not _ok:
+                if args.verbose:
+                    print(f"  abidw failed for {ver}: {_reason}", file=sys.stderr)
                 results.append((ver, None))
                 continue
 
@@ -565,9 +576,11 @@ def cmd_validate(args):
                 abi_cache[ver_str] = ("skip", "library not found or download failed")
                 return None
             abi_path = tmp / f"{idx}.abi"
-            if not _generate_baseline(lib, abi_path, args.verbose):
-                abi_cache[ver_str] = lib  # store .so for nm-D fallback
-                return lib  # nm-D will handle this
+            _ok_abi, _abidw_reason = _generate_baseline(lib, abi_path, args.verbose)
+            if not _ok_abi:
+                # nm-D fallback: store .so path so compare loop can use nm -D
+                abi_cache[ver_str] = (lib, _abidw_reason)
+                return lib
             abi_cache[ver_str] = abi_path
             return abi_path
 
@@ -685,7 +698,8 @@ def cmd_validate(args):
                 stats = ""
                 if result.functions_removed or result.functions_added:
                     stats = f"  (-{result.functions_removed} +{result.functions_added})"
-                line = f"  {icon} {kind:<8} {verdict}{stats}{flag}"
+                tool = "[nm-D]" if "[nm-D fallback" in (result.stdout or "") else "[abidiff]"
+                line = f"  {icon} {kind:<8} {verdict}{stats}  {tool}{flag}"
             print(f"  {old_v:<22}{new_v:<22}{line}")
         print()
         pct = int(100 * ok / total) if total else 0
