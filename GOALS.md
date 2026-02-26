@@ -297,8 +297,6 @@ abi-scanner compare \
 - [x] Source adapters: CondaSource, AptSource, LocalSource
 
 ### ❌ Advanced Features (Priority 1)
-
-### ❌ Advanced Features (Priority 1)
 - [x] **Version discovery** — `abi-scanner list` (PR #11)
 - [x] **Compatible version finder** — `abi-scanner compatible` (PR #12)
 - [ ] **SemVer validation** — `abi-scanner validate` (planned PR #13)
