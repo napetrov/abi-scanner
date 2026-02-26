@@ -231,79 +231,82 @@ abi-scanner compare \
 
 ## 📋 Что УЖЕ Работает (Implemented)
 
+### ✅ CLI Commands
+- [x] **`abi-scanner compare`** — полный pipeline conda/apt/local
+  - Intel conda, conda-forge, APT, local (.so / archives)
+  - Suppression файлы, JSON output, --fail-on
+- [x] **`abi-scanner list`** — перечисление доступных версий
+  - Intel conda, conda-forge (micromamba search)
+  - Intel APT (Packages.gz parsing)
+  - --filter regex, --format json
+- [x] **`abi-scanner compatible`** — поиск совместимого диапазона версий
+  - base version → сравнение со всеми более новыми
+  - --stop-at-first-break, --fail-on, --format json
+- [ ] **`abi-scanner validate`** — planned (SemVer compliance)
+
 ### ✅ Package Sources
-- [x] **Conda/mamba** — через micromamba CLI
-  - conda-forge channel
-  - Intel channel (software.repos.intel.com)
-  - Автоматическое разрешение версий
-  - Скачивание + extraction .so из .tar.bz2/.conda
-
-- [x] **Intel APT** — через dpkg
-  - Intel oneAPI repository
-  - Download .deb files
-  - Extract .so from .deb
-
-- [x] **Local files** — прямой анализ
+- [x] **Conda/mamba** — CondaSource adapter
+  - conda-forge, Intel channel
+  - `list_versions()`, download, extract, find .so
+- [x] **Intel APT** — AptSource adapter
+  - `resolve_url()` — Packages.gz URL resolution
+  - `list_versions()` — Packages.gz version enumeration
+  - Download .deb, extract via dpkg-deb
+- [x] **Local files** — LocalSource adapter
   - .so файлы напрямую
-  - .deb extraction (через dpkg)
+  - Архивы (.deb, .conda, .tar.gz, .zip) → extract then find
 
 ### ✅ ABI Analysis
-- [x] **Baseline generation** — через abidw
-  - XML dump полного ABI (.abi files)
-  - Caching baselines (переиспользование)
-
-- [x] **Comparison** — через abidiff
-  - Sequential comparison (version N → N+1)
-  - Exit codes (0/4/8/12)
-  - Symbol diff (added/removed/changed)
-
-- [x] **Symbol Filtering**
-  - Suppressions для MKL/TBB internals
-  - Config файлы (.txt format)
+- [x] **Baseline generation** — abidw
+- [x] **Comparison** — abidiff, exit codes (0/4/8/12)
+- [x] **Symbol Filtering** — suppression конфиги
+  - `config/suppressions/oneccl.txt` — oneCCL
+  - `config/suppressions/compiler.txt` — DPC++ compiler (libsycl)
 
 ### ✅ Output Formats
-- [x] **Text reports** — human-readable
-- [x] **Exit codes** — для CI/CD
-- [x] **Raw abidiff output**
+- [x] **Text** — human-readable с verdict/статистикой
+- [x] **JSON** — machine-readable для CI
+- [x] **Exit codes** — 0/4/8/12 для CI/CD
+
+### ✅ Package Configs
+- [x] `config/package_configs/oneccl.yaml`
+- [x] `config/package_configs/compiler.yaml`
 
 ### ✅ Scripts
-- [x] `process_single_version.sh` — download + analyze one version
-- [x] `compare_all_history.py` — batch sequential comparison
-- [x] Package-specific configs (onedal.yaml)
+- [x] `compare_all_history.py` — batch history (conda + APT channels)
+  - APT channel support (--apt-pkg-pattern, --apt-base-url)
+  - Lazy micromamba init, validated --filter-version regex
+
+### ✅ Known ABI Results
+- oneCCL 2021.14.0→2021.14.1: NO_CHANGE
+- oneCCL 2021.14.x→2021.15.0: BREAKING (-2 +20)
+- DPC++ libsycl 2025.0.x: Stable patch series
+- DPC++ libsycl 2025.0→2025.1: BREAKING (-1 +78)
+- DPC++ libsycl 2025.1→2025.2: BREAKING (-7 +94)
+- DPC++ libsycl 2025.2→2025.3: COMPATIBLE (+164)
 
 ---
 
 ## 📋 Что НАДО Сделать (TODO)
 
-### ❌ CLI Interface (Priority 1)
-- [ ] **Unified CLI command** — `abi-scanner` entrypoint
-  - Subcommands: compare, analyze, validate, compatible
-  - Package spec parser: `channel:package=version`
-  - Flag standardization: --format, --output, --fail-on
-  - Help documentation (--help)
+### ✅ CLI Interface — DONE (PR #10, #11, #12)
+- [x] `abi-scanner compare` — conda, apt, local
+- [x] `abi-scanner list` — conda, apt
+- [x] `abi-scanner compatible` — find ABI-compatible version range
+- [x] Package spec parser: `channel:package=version`
+- [x] Source adapters: CondaSource, AptSource, LocalSource
 
-- [ ] **Channel abstraction** — generic source interface
-  - Conda adapter (done, needs refactor)
-  - APT adapter (done, needs refactor)
-  - PyPI adapter (planned)
-  - Local file adapter (done)
+### ❌ Advanced Features (Priority 1)
 
-### ❌ Advanced Features (Priority 2)
+### ❌ Advanced Features (Priority 1)
+- [x] **Version discovery** — `abi-scanner list` (PR #11)
+- [x] **Compatible version finder** — `abi-scanner compatible` (PR #12)
+- [ ] **SemVer validation** — `abi-scanner validate` (planned PR #13)
+  - Batch check all transitions for a version range
+  - Report SemVer violations with evidence
 - [ ] **Cross-channel comparison**
   - conda-forge:dal vs intel:dal
   - Detection of different builds
-
-- [ ] **Version discovery**
-  - `abi-scanner list conda-forge:dal` — show all versions
-  - `abi-scanner latest intel:dal` — get newest version
-
-- [ ] **Compatible version finder**
-  - Find all versions compatible with current
-  - Upgrade path recommendation
-
-- [ ] **SemVer validation**
-  - Batch check all transitions
-  - Report violations with evidence
 
 ### ❌ Output & Reporting (Priority 2)
 - [ ] **JSON output** — machine-readable
@@ -457,5 +460,5 @@ abi-scanner compare \
 
 ---
 
-**Last Updated:** 2026-02-21  
-**Next Review:** After Phase 1 completion
+**Last Updated:** 2026-02-25  
+**Next Review:** After validate command (PR #13)
