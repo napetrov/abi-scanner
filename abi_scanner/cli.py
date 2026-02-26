@@ -562,12 +562,12 @@ def cmd_validate(args):
             )
             lib = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name, args.verbose)
             if not lib:
-                abi_cache[ver_str] = None
+                abi_cache[ver_str] = ("skip", "library not found or download failed")
                 return None
             abi_path = tmp / f"{idx}.abi"
             if not _generate_baseline(lib, abi_path, args.verbose):
                 abi_cache[ver_str] = lib  # store .so for nm-D fallback
-                return lib
+                return lib  # nm-D will handle this
             abi_cache[ver_str] = abi_path
             return abi_path
 
@@ -671,9 +671,13 @@ def cmd_validate(args):
         print(f"SemVer compliance report — {spec}{lib_label}  [{mode} mode]")
         print(f"{'From':<22} {'To':<22} {'Type':<8} {'Status'}")
         print("-" * 75)
+        # build a quick lookup: (old_v, new_v) → reason
+        _skip_reasons = {(sk["from"], sk["to"]): sk.get("reason", "library not found or abidw failed")
+                         for sk in skipped}
         for old_v, new_v, kind, result, compliant in rows:
             if result is None:
-                line = "  SKIPPED"
+                reason = _skip_reasons.get((old_v, new_v), "unknown")
+                line = f"  ⚠️  SKIPPED ({reason})"
             else:
                 icon = ICON.get(result.exit_code, "?")
                 verdict = VERDICT.get(result.exit_code, f"rc={result.exit_code}")
@@ -696,13 +700,16 @@ def cmd_validate(args):
                     if det:
                         for dline in det.splitlines():
                             print(f"    {dline}")
+        elif total == 0:
+            print("⚠️  All transitions skipped — check package name, library name, and channel config.")
         else:
             print("No violations found. ✅")
 
     if skipped:
-        print(f"\nWarning: {len(skipped)} transition(s) skipped (library not found or abidw failed):")
+        print(f"\nWarning: {len(skipped)} transition(s) skipped:")
         for sk in skipped:
-            print(f"  ⚠️  {sk['from']} -> {sk['to']}  [{sk['kind'].upper()}]")
+            reason = sk.get("reason", "library not found or abidw failed")
+            print(f"  ⚠️  {sk['from']} -> {sk['to']}  [{sk['kind'].upper()}]  — {reason}")
         if args.fail_on != "none":
             print("  Note: skipped transitions are NOT counted as violations.", file=sys.stderr)
 
