@@ -70,6 +70,14 @@ def _generate_baseline(lib_path: Path, output_path: Path,
     return True, ""
 
 
+def _parse_spec_parts(spec) -> tuple:
+    """Return (channel, package) from a PackageSpec or spec string."""
+    spec_str = str(spec)
+    if ":" in spec_str:
+        return spec_str.split(":", 1)
+    return "unknown", spec_str
+
+
 def _download_and_prepare(spec: PackageSpec, work_dir: Path,
                            library_name: Optional[str],
                            verbose: bool = False,
@@ -215,18 +223,21 @@ def cmd_compare(args):
 
         library_name: Optional[str] = getattr(args, "library_name", None)
         suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
+        _apt_index_url: Optional[str] = getattr(args, "apt_index_url", None)
 
         with tempfile.TemporaryDirectory(prefix="abi_scanner_") as tmpdir:
             tmp = Path(tmpdir)
 
             # Prepare old version
-            old_lib = _download_and_prepare(old_spec, tmp / "old", library_name, args.verbose)
+            old_lib = _download_and_prepare(old_spec, tmp / "old", library_name,
+                                            args.verbose, apt_index_url=_apt_index_url)
             if not old_lib:
                 print(f"Error: could not obtain library for {old_spec}", file=sys.stderr)
                 return 1
 
             # Prepare new version
-            new_lib = _download_and_prepare(new_spec, tmp / "new", library_name, args.verbose)
+            new_lib = _download_and_prepare(new_spec, tmp / "new", library_name,
+                                            args.verbose, apt_index_url=_apt_index_url)
             if not new_lib:
                 print(f"Error: could not obtain library for {new_spec}", file=sys.stderr)
                 return 1
@@ -313,6 +324,7 @@ def cmd_compatible(args):
     source = create_source(base_spec)
     library_name: Optional[str] = getattr(args, "library_name", None)
     suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
+    _apt_index_url: Optional[str] = getattr(args, "apt_index_url", None)
 
     # --- Gather candidate versions ----------------------------------------
     try:
@@ -321,7 +333,8 @@ def cmd_compatible(args):
         elif base_spec.channel == "apt":
             if not args.apt_pkg_pattern:
                 args.apt_pkg_pattern = f"^{_re.escape(base_spec.package)}$"
-            all_versions = [v for v, _f, _pkg in source.list_versions(args.apt_pkg_pattern)]
+            all_versions = [v for v, _f, _pkg in source.list_versions(
+                args.apt_pkg_pattern, index_url=_apt_index_url)]
         else:
             print(f"Error: compatible not supported for channel '{base_spec.channel}'", file=sys.stderr)
             return 1
@@ -496,11 +509,7 @@ def _render_markdown_report(
         out.write(s + "\n")
 
     # ── Header ──────────────────────────────────────────────────────────────
-    _spec_str = str(spec)
-    if ":" in _spec_str:
-        _channel, _pkg = _spec_str.split(":", 1)
-    else:
-        _channel, _pkg = "unknown", _spec_str
+    _channel, _pkg = _parse_spec_parts(spec)
 
     w("# ABI Compliance Report")
     w()
@@ -807,10 +816,11 @@ def cmd_validate(args):
     _generated_at = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Always build the full JSON dict (used by json / report-dir paths)
+    _json_channel, _json_pkg = _parse_spec_parts(spec)
     _json_dict = {
         "spec": str(spec),
-        "channel": str(spec).split(":", 1)[0] if ":" in str(spec) else "unknown",
-        "package": str(spec).split(":", 1)[1] if ":" in str(spec) else str(spec),
+        "channel": _json_channel,
+        "package": _json_pkg,
         "library": library_name or "(auto-detect)",
         "generated_at": _generated_at,
         "total_transitions": total,
@@ -1100,6 +1110,8 @@ Exit codes:
     cp.add_argument("--fail-on", choices=["breaking", "any", "none"], default="none")
     cp.add_argument("--library-name", help="Target .so filename (e.g. libsycl.so)")
     cp.add_argument("--suppressions", help="Path to abidiff suppressions file")
+    cp.add_argument("--apt-index-url", metavar="URL",
+                    help="Custom APT Packages.gz URL for apt channel packages.")
     cp.add_argument("-v", "--verbose", action="store_true")
 
     # compatible
@@ -1112,6 +1124,9 @@ Exit codes:
     compat.add_argument("--filter", help="Regex filter on candidate version strings")
     compat.add_argument("--apt-pkg-pattern",
                         help="Regex for APT package names (required for apt channel)")
+    compat.add_argument("--apt-index-url", metavar="URL",
+                        help="Custom APT Packages.gz URL (e.g. Intel GPU driver repo). "
+                             "Overrides the default Intel oneAPI index for apt channel.")
     compat.add_argument("--stop-at-first-break", action="store_true",
                         help="Stop checking as soon as first incompatible version is found")
     compat.add_argument("--fail-on", choices=["breaking", "any", "none"], default="none",

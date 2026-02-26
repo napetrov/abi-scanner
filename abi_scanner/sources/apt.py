@@ -33,8 +33,12 @@ def normalize_debian_version(ver: str) -> str:
     # Drop epoch (e.g. "1:")
     if ":" in ver:
         ver = ver.split(":", 1)[1]
-    # Strip distro/backport suffix (~22.04, ~u22.04, ~focal, etc.)
-    ver = re.sub(r"~[^~]+$", "", ver)
+    # Strip only known distro/backport tails; preserve prerelease markers like ~rc1, ~beta1
+    ver = re.sub(
+        r"~(?:u?\d+(?:\.\d+)*|focal|jammy|noble|bookworm|bullseye|buster|bionic|xenial)$",
+        "",
+        ver,
+    )
     # Debian revision: replace first '-' and any subsequent '-' with '.'
     ver = ver.replace("-", ".")
     return ver
@@ -89,8 +93,15 @@ class AptSource(PackageSource):
             raise ValueError(f"Invalid APT index URL (missing /dists/): {url}")
         base = url[:dists_idx]  # https://host/repo (e.g. .../oneapi)
 
-        with urllib.request.urlopen(url, timeout=60) as resp:
-            index_data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                index_data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
+        except urllib.error.HTTPError as e:
+            raise ValueError(f"HTTP {e.code} fetching APT index: {url}") from e
+        except urllib.error.URLError as e:
+            raise ValueError(f"Network error fetching APT index: {e.reason}") from e
+        except (OSError, gzip.BadGzipFile) as e:
+            raise ValueError(f"Failed to decompress APT index {url}: {e}") from e
 
         for block in index_data.split("\n\n"):
             pm = re.search(r"^Package: (.+)$", block, re.M)
@@ -134,12 +145,13 @@ class AptSource(PackageSource):
         from packaging.version import Version, InvalidVersion
 
         def _sort_key(t):
+            norm = normalize_debian_version(t[0])
             try:
-                return Version(normalize_debian_version(t[0]))
+                return (0, Version(norm))
             except InvalidVersion:
-                # Last-resort: pad numeric segments
-                parts = re.split(r'[^0-9]+', normalize_debian_version(t[0]))
-                return tuple(int(x) if x else 0 for x in parts)
+                # Last-resort: pad numeric segments, placed after valid versions
+                parts = re.split(r'[^0-9]+', norm)
+                return (1, tuple(int(x) if x else 0 for x in parts))
 
         return sorted(entries, key=_sort_key)
 
