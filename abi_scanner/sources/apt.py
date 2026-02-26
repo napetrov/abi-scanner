@@ -30,9 +30,13 @@ def normalize_debian_version(ver: str) -> str:
         "2025.0.0-1169"               → "2025.0.0.1169"
         "1:1.3.0-1~focal"             → "1.3.0.1"
     """
-    # Drop epoch (e.g. "1:")
+    # Preserve Debian epoch using PEP 440 epoch syntax (e.g. "1:2.0" -> "1!2.0")
     if ":" in ver:
-        ver = ver.split(":", 1)[1]
+        epoch, rest = ver.split(":", 1)
+        if epoch.isdigit():
+            ver = f"{int(epoch)}!{rest}"
+        else:
+            ver = rest
     # Strip only known distro/backport tails; preserve prerelease markers like ~rc1, ~beta1
     ver = re.sub(
         r"~(?:u?\d+(?:\.\d+)*|focal|jammy|noble|bookworm|bullseye|buster|bionic|xenial)$",
