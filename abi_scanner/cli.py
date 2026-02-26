@@ -11,7 +11,7 @@ from typing import Optional
 
 from .package_spec import PackageSpec
 from .sources import create_source
-from .analyzer import ABIAnalyzer, PublicAPIFilter, ABIVerdict, ABIComparisonResult
+from .analyzer import ABIAnalyzer, PublicAPIFilter, ABIVerdict, ABIComparisonResult, demangle_symbol, classify_symbol_tier
 
 
 
@@ -276,7 +276,7 @@ def cmd_compare(args):
             output = "\n".join(lines)
 
         if args.output:
-            Path(args.output).write_text(output)
+            Path(args.output).write_text(output, encoding="utf-8")
         else:
             print(output)
 
@@ -466,6 +466,142 @@ def cmd_compatible(args):
     return 0
 
 
+def _render_markdown_report(
+    spec,
+    library_name: "Optional[str]",
+    rows: list,
+    violations: list,
+    skipped: list,
+    strict: bool,
+    details_limit: int,
+    generated_at: str,
+    VERDICT: dict,
+    ICON: dict,
+) -> str:
+    """Render a stable Markdown ABI compliance report."""
+    import io
+
+    total = len([r for r in rows if r[3] is not None])
+    ok    = len([r for r in rows if r[4] is True])
+    pct   = int(100 * ok / total) if total else 0
+    mode  = "strict" if strict else "lenient"
+    lib_label = library_name or "(auto-detect)"
+
+    out = io.StringIO()
+
+    def w(s: str = "") -> None:
+        out.write(s + "\n")
+
+    # ── Header ──────────────────────────────────────────────────────────────
+    w("# ABI Compliance Report")
+    w()
+    w(f"**Package:** `{spec}`  ")
+    w(f"**Library:** `{lib_label}`  ")
+    w(f"**Mode:** {mode}  ")
+    w(f"**Generated:** {generated_at}  ")
+    w(f"**Versions scanned:** {len(rows) + 1} &nbsp;|&nbsp; "
+      f"**Transitions:** {len(rows)} &nbsp;|&nbsp; "
+      f"**Compliant:** {ok} &nbsp;|&nbsp; "
+      f"**Violations:** {len(violations)} &nbsp;|&nbsp; "
+      f"**Skipped:** {len(skipped)}")
+    w()
+
+    # ── Compliance badge ─────────────────────────────────────────────────────
+    if total == 0:
+        w("> ⚠️ All transitions skipped — no data.")
+    elif violations:
+        w(f"> ❌ **SemVer compliance: {pct}%** ({ok}/{total} transitions pass)")
+    else:
+        w(f"> ✅ **SemVer compliance: {pct}%** — all transitions pass")
+    w()
+
+    # ── Summary table ────────────────────────────────────────────────────────
+    w("## Summary")
+    w()
+    w("| From | To | Type | Result | Tool | Δ Removed | Δ Added |")
+    w("|------|-----|------|--------|------|----------:|--------:|")
+
+    _skip_map = {(sk["from"], sk["to"]): sk.get("reason", "n/a") for sk in skipped}
+    for old_v, new_v, kind, result, compliant in rows:
+        if result is None:
+            w(f"| `{old_v}` | `{new_v}` | {kind} | ⚠️ SKIPPED | — | — | — |")
+        else:
+            icon  = ICON.get(result.exit_code, "?")
+            verd  = VERDICT.get(result.exit_code, f"rc={result.exit_code}")
+            flag  = "" if compliant else " ←"
+            tool  = "nm-D" if "[nm-D fallback" in (result.stdout or "") else "abidiff"
+            rem   = str(result.functions_removed) if result.functions_removed else "—"
+            add   = str(result.functions_added)   if result.functions_added   else "—"
+            w(f"| `{old_v}` | `{new_v}` | {kind} | {icon} {verd}{flag} | {tool} | {rem} | {add} |")
+    w()
+
+    # ── Violations detail ────────────────────────────────────────────────────
+    w("## Violations")
+    w()
+    if not violations:
+        w("_No violations found._ ✅")
+        w()
+    else:
+        for v in violations:
+            result = v.get("_result")
+            w(f"### ❌ `{v['from']}` → `{v['to']}` &nbsp; [{v['kind'].upper()}] — {v['verdict']}")
+            w()
+            w(f"**Removed:** {v['functions_removed']} &nbsp; **Added:** {v['functions_added']}")
+            w()
+
+            for _section, syms_raw, label in [
+                ("removed", result.public_removed if result else [], "📉 Removed symbols"),
+                ("changed", result.public_changed if result else [], "🔄 Changed symbols (kind/type)"),
+                ("added",   result.public_added   if result else [], "📈 Added symbols"),
+            ]:
+                if not syms_raw:
+                    continue
+                # group by tier
+                by_tier: dict = {}
+                for s in syms_raw:
+                    dm = demangle_symbol(s)
+                    tier = classify_symbol_tier(dm)
+                    by_tier.setdefault(tier, []).append(dm)
+
+                total_syms = len(syms_raw)
+                w("<details>")
+                w(f"<summary><b>{label}</b> ({total_syms})</summary>")
+                w()
+                for tier in ("public", "preview", "internal"):
+                    tier_syms = by_tier.get(tier, [])
+                    if not tier_syms:
+                        continue
+                    w(f"**{tier.capitalize()} ({len(tier_syms)}):**")
+                    w()
+                    w("| Symbol |")
+                    w("|--------|")
+                    limit = details_limit if details_limit > 0 else len(tier_syms)
+                    for sym in tier_syms[:limit]:
+                        # escape pipes in symbol names
+                        w(f"| `{sym.replace('|', '&#124;')}` |")
+                    if len(tier_syms) > limit:
+                        w(f"| _... {len(tier_syms) - limit} more_ |")
+                    w()
+                w("</details>")
+                w()
+
+    # ── Skipped ──────────────────────────────────────────────────────────────
+    if skipped:
+        w("## Skipped Transitions")
+        w()
+        w("| From | To | Type | Reason |")
+        w("|------|-----|------|--------|")
+        for sk in skipped:
+            w(f"| `{sk['from']}` | `{sk['to']}` | {sk['kind']} | {sk.get('reason', 'n/a')} |")
+        w()
+
+    # ── Footer ───────────────────────────────────────────────────────────────
+    w("---")
+    w(f"_Generated by [abi-scanner](https://github.com/napetrov/abi-scanner) · {generated_at}_")
+
+    return out.getvalue()
+
+
 def cmd_validate(args):
     """Validate SemVer compliance over a range of consecutive versions."""
     import re as _re
@@ -649,61 +785,127 @@ def cmd_validate(args):
                 })
 
     # ── Output ────────────────────────────────────────────────────────────────
+    import datetime as _dt, re as _re2
     total = len([r for r in rows if r[3] is not None])
     ok    = len([r for r in rows if r[4] is True])
+    _generated_at = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    if args.format == "json":
-        out = {
-            "spec": str(spec),
-            "library": library_name or "(auto-detect)",
-            "total_transitions": total,
-            "compliant": ok,
-            "violations": len(violations),
-            "strict": args.strict,
-            "violation_details": [
-                    {
-                        "from": e["from"], "to": e["to"], "kind": e["kind"],
-                        "exit_code": e["exit_code"], "verdict": e["verdict"],
-                        "functions_removed": e["functions_removed"],
-                        "functions_added": e["functions_added"],
-                        "symbols_by_tier": {
-                            "removed": e["_result"].group_by_tier_and_ns(e["_result"].public_removed) if e.get("_result") else {},
-                            "added":   e["_result"].group_by_tier_and_ns(e["_result"].public_added)   if e.get("_result") else {},
-                            "changed": e["_result"].group_by_tier_and_ns(e["_result"].public_changed) if e.get("_result") else {},
-                        },
-                        "symbols_removed": e["_result"].public_removed if e.get("_result") else [],
-                        "symbols_added":   e["_result"].public_added   if e.get("_result") else [],
-                        "symbols_changed": e["_result"].public_changed if e.get("_result") else [],
-                    }
-                    for e in violations
-                ],
-            "rows": [
-                    {
-                        "from": old_v, "to": new_v, "kind": kind,
-                        "exit_code": r.exit_code if r else None,
-                        "verdict": VERDICT.get(r.exit_code, f"rc={r.exit_code}") if r else "SKIPPED",
-                        "compliant": c,
-                        "symbols_by_tier": {
-                            "removed": r.group_by_tier_and_ns(r.public_removed) if r else {},
-                            "added":   r.group_by_tier_and_ns(r.public_added)   if r else {},
-                            "changed": r.group_by_tier_and_ns(r.public_changed) if r else {},
-                        },
-                        "symbols_removed": r.public_removed if r else [],
-                        "symbols_added":   r.public_added   if r else [],
-                        "symbols_changed": r.public_changed if r else [],
-                    }
-                    for old_v, new_v, kind, r, c in rows
-                ],
-            "skipped": skipped,
-        }
-        print(json.dumps(out, indent=2))
-    else:
+    # Always build the full JSON dict (used by json / report-dir paths)
+    _json_dict = {
+        "spec": str(spec),
+        "library": library_name or "(auto-detect)",
+        "generated_at": _generated_at,
+        "total_transitions": total,
+        "compliant": ok,
+        "violations": len(violations),
+        "strict": args.strict,
+        "violation_details": [
+            {
+                "from": e["from"], "to": e["to"], "kind": e["kind"],
+                "exit_code": e["exit_code"], "verdict": e["verdict"],
+                "functions_removed": e["functions_removed"],
+                "functions_added": e["functions_added"],
+                "symbols_by_tier": {
+                    "removed": e["_result"].group_by_tier_and_ns(e["_result"].public_removed) if e.get("_result") else {},
+                    "added":   e["_result"].group_by_tier_and_ns(e["_result"].public_added)   if e.get("_result") else {},
+                    "changed": e["_result"].group_by_tier_and_ns(e["_result"].public_changed) if e.get("_result") else {},
+                },
+                "symbols_removed": e["_result"].public_removed if e.get("_result") else [],
+                "symbols_added":   e["_result"].public_added   if e.get("_result") else [],
+                "symbols_changed": e["_result"].public_changed if e.get("_result") else [],
+            }
+            for e in violations
+        ],
+        "rows": [
+            {
+                "from": old_v, "to": new_v, "kind": kind,
+                "exit_code": r.exit_code if r else None,
+                "verdict": VERDICT.get(r.exit_code, f"rc={r.exit_code}") if r else "SKIPPED",
+                "compliant": c,
+                "tool": "nm-D" if r and "[nm-D fallback" in (r.stdout or "") else ("abidiff" if r else None),
+                "symbols_by_tier": {
+                    "removed": r.group_by_tier_and_ns(r.public_removed) if r else {},
+                    "added":   r.group_by_tier_and_ns(r.public_added)   if r else {},
+                    "changed": r.group_by_tier_and_ns(r.public_changed) if r else {},
+                },
+                "symbols_removed": r.public_removed if r else [],
+                "symbols_added":   r.public_added   if r else [],
+                "symbols_changed": r.public_changed if r else [],
+            }
+            for old_v, new_v, kind, r, c in rows
+        ],
+        "skipped": skipped,
+    }
+
+    def _write_report_dir(report_dir: str) -> None:
+        """Write both .json and .md into report_dir."""
+        _Path = Path(report_dir)
+        _Path.mkdir(parents=True, exist_ok=True)
+        slug = _re2.sub(r"[^\w.-]", "_", f"{spec}_{library_name or 'auto'}_{_generated_at[:10]}")
+        json_path = _Path / f"{slug}.json"
+        md_path   = _Path / f"{slug}.md"
+        json_path.write_text(json.dumps(_json_dict, indent=2), encoding="utf-8")
+        md_path.write_text(_render_markdown_report(
+            spec=str(spec),
+            library_name=library_name,
+            rows=rows,
+            violations=violations,
+            skipped=skipped,
+            strict=args.strict,
+            details_limit=args.details_limit,
+            generated_at=_generated_at,
+            VERDICT=VERDICT,
+            ICON=ICON,
+        ), encoding="utf-8")
+        print("Reports saved:", file=sys.stderr)
+        print(f"  Markdown: {md_path}", file=sys.stderr)
+        print(f"  JSON:     {json_path}", file=sys.stderr)
+
+    # ── Route output ──────────────────────────────────────────────────────────
+    if getattr(args, "report_dir", None):
+        _write_report_dir(args.report_dir)
+
+    elif args.format == "json":
+        _txt = json.dumps(_json_dict, indent=2)
+        if getattr(args, "output", None):
+            with open(args.output, "w", encoding="utf-8") as _fh:
+                _fh.write(_txt)
+            print(f"Report written to {args.output}", file=sys.stderr)
+        else:
+            print(_txt)
+
+    elif args.format == "markdown":
+        _md = _render_markdown_report(
+            spec=str(spec),
+            library_name=library_name,
+            rows=rows,
+            violations=violations,
+            skipped=skipped,
+            strict=args.strict,
+            details_limit=args.details_limit,
+            generated_at=_generated_at,
+            VERDICT=VERDICT,
+            ICON=ICON,
+        )
+        if getattr(args, "output", None):
+            with open(args.output, "w", encoding="utf-8") as _fh:
+                _fh.write(_md)
+            print(f"Report written to {args.output}", file=sys.stderr)
+        else:
+            print(_md)
+
+    else:  # text
+        import io as _io
+        _tbuf = _io.StringIO()
+
+        def _p(s: str = "") -> None:
+            _tbuf.write(s + "\n")
+
         mode = "strict" if args.strict else "lenient"
         lib_label = f" ({library_name})" if library_name else ""
-        print(f"SemVer compliance report — {spec}{lib_label}  [{mode} mode]")
-        print(f"{'From':<22} {'To':<22} {'Type':<8} {'Status'}")
-        print("-" * 75)
-        # build a quick lookup: (old_v, new_v) → reason
+        _p(f"SemVer compliance report — {spec}{lib_label}  [{mode} mode]")
+        _p(f"{'From':<22} {'To':<22} {'Type':<8} {'Status'}")
+        _p("-" * 75)
         _skip_reasons = {(sk["from"], sk["to"]): sk.get("reason", "library not found or abidw failed")
                          for sk in skipped}
         for old_v, new_v, kind, result, compliant in rows:
@@ -711,35 +913,45 @@ def cmd_validate(args):
                 reason = _skip_reasons.get((old_v, new_v), "unknown")
                 line = f"  ⚠️  SKIPPED ({reason})"
             else:
-                icon = ICON.get(result.exit_code, "?")
+                icon    = ICON.get(result.exit_code, "?")
                 verdict = VERDICT.get(result.exit_code, f"rc={result.exit_code}")
-                flag = "" if compliant else "  ← VIOLATION"
-                stats = ""
-                if result.functions_removed or result.functions_added:
-                    stats = f"  (-{result.functions_removed} +{result.functions_added})"
-                tool = "[nm-D]" if "[nm-D fallback" in (result.stdout or "") else "[abidiff]"
-                line = f"  {icon} {kind:<8} {verdict}{stats}  {tool}{flag}"
-            print(f"  {old_v:<22}{new_v:<22}{line}")
-        print()
+                flag    = "" if compliant else "  ← VIOLATION"
+                stats   = f"  (-{result.functions_removed} +{result.functions_added})" \
+                          if (result.functions_removed or result.functions_added) else ""
+                tool    = "[nm-D]" if "[nm-D fallback" in (result.stdout or "") else "[abidiff]"
+                line    = f"  {icon} {kind:<8} {verdict}{stats}  {tool}{flag}"
+            _p(f"  {old_v:<22}{new_v:<22}{line}")
+        _p()
         pct = int(100 * ok / total) if total else 0
-        print(f"SemVer compliance: {pct}% ({ok}/{total} transitions)")
+        _p(f"SemVer compliance: {pct}% ({ok}/{total} transitions)")
         if violations:
-            print(f"Violations ({len(violations)}):")
+            _p(f"Violations ({len(violations)}):")
             for v in violations:
-                print(f"  ❌ {v['from']} → {v['to']}  [{v['kind'].upper()}]"
-                      f"  {v['verdict']}  (-{v['functions_removed']} +{v['functions_added']})")
+                _p(f"  ❌ {v['from']} → {v['to']}  [{v['kind'].upper()}]"
+                   f"  {v['verdict']}  (-{v['functions_removed']} +{v['functions_added']})")
                 if v.get("_result"):
                     det = v["_result"].format_details(max_per_ns=args.details_limit)
                     if det:
                         for dline in det.splitlines():
-                            print(f"    {dline}")
+                            _p(f"    {dline}")
         elif total == 0:
-            print("⚠️  All transitions skipped — check package name, library name, and channel config.")
+            _p("⚠️  All transitions skipped — check package name, library name, and channel config.")
         else:
-            print("No violations found. ✅")
+            _p("No violations found. ✅")
+
+        _text_out = _tbuf.getvalue()
+        if getattr(args, "output", None):
+            with open(args.output, "w", encoding="utf-8") as _fh:
+                _fh.write(_text_out)
+            print(f"Report written to {args.output}", file=sys.stderr)
+        else:
+            print(_text_out, end="")
 
     if skipped:
-        out_stream = sys.stderr if args.format == "json" else sys.stdout
+        _use_stderr = (args.format in ("json", "markdown")
+                       or getattr(args, "report_dir", None)
+                       or getattr(args, "output", None))
+        out_stream = sys.stderr if _use_stderr else sys.stdout
         print(f"\nWarning: {len(skipped)} transition(s) skipped:", file=out_stream)
         for sk in skipped:
             reason = sk.get("reason", "library not found or abidw failed")
@@ -748,7 +960,7 @@ def cmd_validate(args):
             print("  Note: skipped transitions are NOT counted as violations.", file=sys.stderr)
 
     if violations and args.fail_on != "none":
-        return min(len(violations), 125)  # shell exit codes capped at 125 to avoid wraparound
+        return min(len(violations), 125)
     return 0
 
 
@@ -886,7 +1098,12 @@ Exit codes:
     val = subparsers.add_parser("validate",
         help="Validate SemVer compliance over a range of consecutive versions")
     val.add_argument("spec", help="Package spec: channel:package (e.g. intel:oneccl-cpu)")
-    val.add_argument("--format", choices=["text", "json"], default="text")
+    val.add_argument("--format", choices=["text", "json", "markdown"], default="text",
+                     help="Output format (default: text; use markdown for a human-readable report)")
+    val.add_argument("--output", metavar="FILE",
+                     help="Write report to FILE instead of stdout (used with --format markdown or json)")
+    val.add_argument("--report-dir", metavar="DIR",
+                     help="Write BOTH .md and .json reports to DIR (overrides --format/--output)")
     val.add_argument("--library-name", help="Target .so filename (e.g. libccl.so)")
     val.add_argument("--suppressions", help="Path to abidiff suppressions file")
     val.add_argument("--filter", help="Regex filter on version list (e.g. ^2021.14)")
