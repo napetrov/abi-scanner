@@ -34,8 +34,7 @@ setup(
     packages=find_packages(),
     python_requires=">=3.8",
     install_requires=[
-        # Intentionally empty - stdlib only (argparse) for Phase 1
-        # Phase 2 will add: packaging, pyyaml (for config loading)
+        "packaging>=21.0",
     ],
     entry_points={
         "console_scripts": [

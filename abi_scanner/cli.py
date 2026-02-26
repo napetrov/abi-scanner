@@ -232,9 +232,169 @@ def cmd_compare(args):
 
 
 def cmd_compatible(args):
-    print(f"Finding compatible versions for {args.spec}")
-    print("(not yet implemented)")
-    return 1
+    """Find all versions ABI-compatible with the given base version."""
+    import re as _re
+
+    try:
+        base_spec = PackageSpec.parse(args.spec)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    source = create_source(base_spec)
+    library_name: Optional[str] = getattr(args, "library_name", None)
+    suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
+
+    # --- Gather candidate versions ----------------------------------------
+    try:
+        if base_spec.channel in {"conda-forge", "intel"}:
+            all_versions = source.list_versions(base_spec.package)
+        elif base_spec.channel == "apt":
+            if not args.apt_pkg_pattern:
+                print("Error: --apt-pkg-pattern required for apt channel", file=sys.stderr)
+                return 1
+            all_versions = [v for v, _ in source.list_versions(args.apt_pkg_pattern)]
+        else:
+            print(f"Error: compatible not supported for channel '{base_spec.channel}'", file=sys.stderr)
+            return 1
+    except RuntimeError as e:
+        print(f"Error fetching versions: {e}", file=sys.stderr)
+        return 1
+
+    # Filter to versions strictly newer than base
+    from packaging.version import Version, InvalidVersion
+
+    try:
+        base_ver = Version(base_spec.version)
+    except InvalidVersion as e:
+        print(f"Error: base version is not parseable: {e}", file=sys.stderr)
+        return 1
+
+    parsed = []
+    invalid = []
+    for v in all_versions:
+        try:
+            parsed.append((Version(v), v))
+        except InvalidVersion:
+            invalid.append(v)
+    if invalid and args.verbose:
+        print(f"Skipped unparsable versions: {', '.join(invalid)}", file=sys.stderr)
+    candidates = [v for pv, v in sorted(parsed) if pv > base_ver]
+
+    # Optional regex filter
+    if args.filter:
+        try:
+            fre = _re.compile(args.filter)
+            candidates = [v for v in candidates if fre.search(v)]
+        except _re.error as e:
+            print(f"Error: invalid --filter regex: {e}", file=sys.stderr)
+            return 1
+
+    if not candidates:
+        print(f"No newer versions found for {base_spec}")
+        return 0
+
+    if args.verbose:
+        print(f"Base: {base_spec}", file=sys.stderr)
+        print(f"Checking {len(candidates)} candidate(s): {', '.join(candidates)}", file=sys.stderr)
+
+    # --- Compare base -> each candidate, caching baselines ----------------
+    results = []  # list of (version, ABI result | None)
+
+    with tempfile.TemporaryDirectory(prefix="abi_scanner_compat_") as tmpdir:
+        tmp = Path(tmpdir)
+
+        # Prepare base version once
+        base_lib = _download_and_prepare(base_spec, tmp / "base", library_name, args.verbose)
+        if not base_lib:
+            print(f"Error: could not obtain library for {base_spec}", file=sys.stderr)
+            return 1
+        base_abi = tmp / "base.abi"
+        if not _generate_baseline(base_lib, base_abi, args.verbose):
+            print("Error: abidw failed for base version", file=sys.stderr)
+            return 1
+
+        analyzer = ABIAnalyzer(suppressions=suppressions)
+        api_filter = PublicAPIFilter()
+
+        for idx, ver in enumerate(candidates):
+            new_spec = PackageSpec(
+                channel=base_spec.channel,
+                package=base_spec.package,
+                version=ver,
+            )
+            new_lib = _download_and_prepare(
+                new_spec, tmp / f"v{idx}", library_name, args.verbose
+            )
+            if not new_lib:
+                if args.verbose:
+                    print(f"  Skipping {ver}: library not found", file=sys.stderr)
+                results.append((ver, None))
+                continue
+
+            new_abi = tmp / f"v{idx}.abi"
+            if not _generate_baseline(new_lib, new_abi, args.verbose):
+                results.append((ver, None))
+                continue
+
+            result = analyzer.compare(base_abi, new_abi, api_filter, api_filter)
+            results.append((ver, result))
+
+            if args.stop_at_first_break and result.exit_code & 8:
+                if args.verbose:
+                    print(f"  Stopping at first incompatible version: {ver}", file=sys.stderr)
+                break
+
+    # --- Format output -------------------------------------------------------
+    VERDICT = {0: "✅ NO_CHANGE", 4: "✅ COMPATIBLE", 8: "⚠️  INCOMPATIBLE", 12: "❌ BREAKING"}
+
+    compatible = [v for v, r in results if r is not None and not (r.exit_code & 8)]
+    breaking_at = next((v for v, r in results if r is not None and (r.exit_code & 8)), None)
+
+    if args.format == "json":
+        out = {
+            "base": str(base_spec),
+            "compatible_versions": compatible,
+            "first_breaking": breaking_at,
+            "details": [
+                {
+                    "version": v,
+                    "exit_code": r.exit_code if r else None,
+                    "verdict": VERDICT.get(r.exit_code, f"rc={r.exit_code}") if r else "SKIPPED",
+                }
+                for v, r in results
+            ],
+        }
+        print(json.dumps(out, indent=2))
+    else:
+        print(f"ABI compatibility report for {base_spec}")
+        print(f"{'Version':<20} {'Status'}")
+        print("-" * 50)
+        print(f"  {base_spec.version:<18} (base)")
+        for ver, result in results:
+            if result is None:
+                verdict = "⚠️  SKIPPED"
+            else:
+                verdict = VERDICT.get(result.exit_code, f"rc={result.exit_code}")
+                if result.functions_removed or result.functions_added or result.functions_changed:
+                    verdict += f"  (-{result.functions_removed} +{result.functions_added} ~{result.functions_changed})"
+            print(f"  {ver:<18} {verdict}")
+        print()
+        if compatible:
+            last_compat = compatible[-1]
+            print(f"Compatible range : {base_spec.version} - {last_compat}")
+        if breaking_at:
+            print(f"First incompatible: {breaking_at}")
+        elif not args.stop_at_first_break:
+            print(f"All {len(compatible)} checked version(s) are compatible.")
+
+    # Exit code: honor --fail-on setting
+    any_change = any(r is not None and r.exit_code > 0 for _, r in results)
+    if args.fail_on == "breaking" and breaking_at:
+        return 8
+    if args.fail_on == "any" and any_change:
+        return 8
+    return 0
 
 
 def cmd_validate(args):
@@ -357,10 +517,21 @@ Exit codes:
     cp.add_argument("--suppressions", help="Path to abidiff suppressions file")
     cp.add_argument("-v", "--verbose", action="store_true")
 
-    # compatible (stub)
-    compat = subparsers.add_parser("compatible", help="Find compatible versions for a package")
-    compat.add_argument("spec")
+    # compatible
+    compat = subparsers.add_parser("compatible",
+        help="Find all versions ABI-compatible with a given base version")
+    compat.add_argument("spec", help="Base package spec (channel:package=version)")
     compat.add_argument("--format", choices=["text", "json"], default="text")
+    compat.add_argument("--library-name", help="Target .so filename (e.g. libsycl.so)")
+    compat.add_argument("--suppressions", help="Path to abidiff suppressions file")
+    compat.add_argument("--filter", help="Regex filter on candidate version strings")
+    compat.add_argument("--apt-pkg-pattern",
+                        help="Regex for APT package names (required for apt channel)")
+    compat.add_argument("--stop-at-first-break", action="store_true",
+                        help="Stop checking as soon as first incompatible version is found")
+    compat.add_argument("--fail-on", choices=["breaking", "any", "none"], default="none",
+                        help="Return non-zero exit if incompatible version found")
+    compat.add_argument("-v", "--verbose", action="store_true")
 
     # validate (stub)
     val = subparsers.add_parser("validate", help="Validate SemVer compliance")
