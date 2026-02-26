@@ -262,13 +262,24 @@ def cmd_compatible(args):
         return 1
 
     # Filter to versions strictly newer than base
+    from packaging.version import Version, InvalidVersion
+
     try:
-        from packaging.version import Version
         base_ver = Version(base_spec.version)
-        candidates = [v for v in all_versions if Version(v) > base_ver]
-    except Exception:
-        # Fallback: string comparison
-        candidates = [v for v in all_versions if v > base_spec.version]
+    except InvalidVersion as e:
+        print(f"Error: base version is not parseable: {e}", file=sys.stderr)
+        return 1
+
+    parsed = []
+    invalid = []
+    for v in all_versions:
+        try:
+            parsed.append((Version(v), v))
+        except InvalidVersion:
+            invalid.append(v)
+    if invalid and args.verbose:
+        print(f"Skipped unparsable versions: {', '.join(invalid)}", file=sys.stderr)
+    candidates = [v for pv, v in sorted(parsed) if pv > base_ver]
 
     # Optional regex filter
     if args.filter:
@@ -371,16 +382,17 @@ def cmd_compatible(args):
         print()
         if compatible:
             last_compat = compatible[-1]
-            print(f"Compatible range : {base_spec.version} – {last_compat}")
+            print(f"Compatible range : {base_spec.version} - {last_compat}")
         if breaking_at:
             print(f"First incompatible: {breaking_at}")
         elif not args.stop_at_first_break:
             print(f"All {len(compatible)} checked version(s) are compatible.")
 
-    # Exit code: non-zero if any breaking change found
-    if args.fail_on == "any" and breaking_at:
-        return 8
+    # Exit code: honor --fail-on setting
+    any_change = any(r is not None and r.exit_code > 0 for _, r in results)
     if args.fail_on == "breaking" and breaking_at:
+        return 8
+    if args.fail_on == "any" and any_change:
         return 8
     return 0
 
