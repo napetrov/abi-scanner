@@ -11,7 +11,7 @@ from typing import Optional
 
 from .package_spec import PackageSpec
 from .sources import create_source
-from .analyzer import ABIAnalyzer, PublicAPIFilter
+from .analyzer import ABIAnalyzer, PublicAPIFilter, ABIVerdict, ABIComparisonResult
 
 
 
@@ -560,7 +560,8 @@ def cmd_validate(args):
         api_filter = PublicAPIFilter()
 
         # Cache baselines: version_str → Path|None
-        abi_cache: dict = {}
+        abi_cache: dict[str, Optional[Path]] = {}
+        abi_reason_cache: dict[str, str] = {}
 
         _apt_version_to_pkg = locals().get("_apt_version_to_pkg", {})
 
@@ -573,13 +574,15 @@ def cmd_validate(args):
             )
             lib = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name, args.verbose)
             if not lib:
-                abi_cache[ver_str] = ("skip", "library not found or download failed")
+                abi_cache[ver_str] = None
+                abi_reason_cache[ver_str] = "library not found or download failed"
                 return None
             abi_path = tmp / f"{idx}.abi"
             _ok_abi, _abidw_reason = _generate_baseline(lib, abi_path, args.verbose)
             if not _ok_abi:
                 # nm-D fallback: store .so path so compare loop can use nm -D
-                abi_cache[ver_str] = (lib, _abidw_reason)
+                abi_cache[ver_str] = lib
+                abi_reason_cache[ver_str] = _abidw_reason
                 return lib
             abi_cache[ver_str] = abi_path
             return abi_path
@@ -593,7 +596,8 @@ def cmd_validate(args):
             new_abi = get_abi(new_v, i * 2 + 1)
 
             if old_abi is None or new_abi is None:
-                skipped.append({"from": old_v, "to": new_v, "kind": kind})
+                reason = abi_reason_cache.get(old_v) if old_abi is None else abi_reason_cache.get(new_v)
+                skipped.append({"from": old_v, "to": new_v, "kind": kind, "reason": reason or "library not found or abidw failed"})
                 rows.append((old_v, new_v, kind, None, None))
                 continue
 
@@ -720,10 +724,11 @@ def cmd_validate(args):
             print("No violations found. ✅")
 
     if skipped:
-        print(f"\nWarning: {len(skipped)} transition(s) skipped:")
+        out_stream = sys.stderr if args.format == "json" else sys.stdout
+        print(f"\nWarning: {len(skipped)} transition(s) skipped:", file=out_stream)
         for sk in skipped:
             reason = sk.get("reason", "library not found or abidw failed")
-            print(f"  ⚠️  {sk['from']} -> {sk['to']}  [{sk['kind'].upper()}]  — {reason}")
+            print(f"  ⚠️  {sk['from']} -> {sk['to']}  [{sk['kind'].upper()}]  — {reason}", file=out_stream)
         if args.fail_on != "none":
             print("  Note: skipped transitions are NOT counted as violations.", file=sys.stderr)
 
@@ -867,7 +872,7 @@ Exit codes:
         help="Validate SemVer compliance over a range of consecutive versions")
     val.add_argument("spec", help="Package spec: channel:package (e.g. intel:oneccl-cpu)")
     val.add_argument("--format", choices=["text", "json"], default="text")
-    val.add_argument("--library-name", help="Target .so filename (e.g. libccl.so). Use 'all' to scan every .so in the package.")
+    val.add_argument("--library-name", help="Target .so filename (e.g. libccl.so)")
     val.add_argument("--suppressions", help="Path to abidiff suppressions file")
     val.add_argument("--filter", help="Regex filter on version list (e.g. ^2021.14)")
     val.add_argument("--from-version", help="Start of version range (inclusive)")

@@ -1,5 +1,6 @@
-import sys
 """APT/Debian package source adapter."""
+
+import sys
 
 import subprocess
 from pathlib import Path
@@ -58,7 +59,10 @@ class AptSource(PackageSource):
         url = index_url or self.INTEL_APT_INDEX
         if not url.startswith("https://"):
             raise ValueError(f"Only https:// index URLs allowed, got: {url}")
-        base = url[:url.find("/dists/")]  # https://host/repo (e.g. .../oneapi)
+        dists_idx = url.find("/dists/")
+        if dists_idx == -1:
+            raise ValueError(f"Invalid APT index URL (missing /dists/): {url}")
+        base = url[:dists_idx]  # https://host/repo (e.g. .../oneapi)
 
         with urllib.request.urlopen(url, timeout=60) as resp:
             index_data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
