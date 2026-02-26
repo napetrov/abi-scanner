@@ -496,9 +496,16 @@ def _render_markdown_report(
         out.write(s + "\n")
 
     # ── Header ──────────────────────────────────────────────────────────────
+    _spec_str = str(spec)
+    if ":" in _spec_str:
+        _channel, _pkg = _spec_str.split(":", 1)
+    else:
+        _channel, _pkg = "unknown", _spec_str
+
     w("# ABI Compliance Report")
     w()
-    w(f"**Package:** `{spec}`  ")
+    w(f"**Channel:** `{_channel}`  ")
+    w(f"**Package:** `{_pkg}`  ")
     w(f"**Library:** `{lib_label}`  ")
     w(f"**Mode:** {mode}  ")
     w(f"**Generated:** {generated_at}  ")
@@ -802,6 +809,8 @@ def cmd_validate(args):
     # Always build the full JSON dict (used by json / report-dir paths)
     _json_dict = {
         "spec": str(spec),
+        "channel": str(spec).split(":", 1)[0] if ":" in str(spec) else "unknown",
+        "package": str(spec).split(":", 1)[1] if ":" in str(spec) else str(spec),
         "library": library_name or "(auto-detect)",
         "generated_at": _generated_at,
         "total_transitions": total,
