@@ -548,6 +548,7 @@ def cmd_validate(args):
                     "verdict": VERDICT.get(result.exit_code, f"rc={result.exit_code}"),
                     "functions_removed": result.functions_removed,
                     "functions_added": result.functions_added,
+                    "_result": result,  # keep for --details output
                 })
 
     # ── Output ────────────────────────────────────────────────────────────────
@@ -570,7 +571,14 @@ def cmd_validate(args):
                 }
                 for old_v, new_v, kind, r, c in rows
             ],
-            "violation_details": violations,
+            "violation_details": [
+                    {k: v for k, v in entry.items() if k != "_result"} | {
+                        "symbols_removed": entry["_result"].public_removed if entry.get("_result") else [],
+                        "symbols_added":   entry["_result"].public_added   if entry.get("_result") else [],
+                        "symbols_changed": entry["_result"].public_changed if entry.get("_result") else [],
+                    }
+                    for entry in violations
+                ],
             "skipped": skipped,
         }
         print(json.dumps(out, indent=2))
@@ -599,6 +607,11 @@ def cmd_validate(args):
             for v in violations:
                 print(f"  ❌ {v['from']} → {v['to']}  [{v['kind'].upper()}]"
                       f"  {v['verdict']}  (-{v['functions_removed']} +{v['functions_added']})")
+                if args.details and v.get("_result"):
+                    det = v["_result"].format_details(max_per_ns=args.details_limit)
+                    if det:
+                        for dline in det.splitlines():
+                            print(f"    {dline}")
         else:
             print("No violations found. ✅")
 
@@ -760,6 +773,10 @@ Exit codes:
                      help="Patch releases must be NO_CHANGE (exit 0); default allows COMPATIBLE (exit 4)")
     val.add_argument("--fail-on", choices=["violations", "none"], default="none",
                      help="Return non-zero exit code based on violation count (capped at 125)")
+    val.add_argument("--details", action="store_true",
+                     help="Show removed/added symbol names for each violation")
+    val.add_argument("--details-limit", type=int, default=20,
+                     help="Max symbols per namespace in --details output (default: 20)")
     val.add_argument("-v", "--verbose", action="store_true")
 
     # list
