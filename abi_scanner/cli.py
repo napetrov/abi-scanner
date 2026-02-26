@@ -177,8 +177,9 @@ def _symbols_only_compare(old_lib: Path, new_lib: Path) -> "Optional[ABIComparis
 
     removed = [s for s in old_syms if s not in new_syms]
     added   = [s for s in new_syms if s not in old_syms]
+    changed = [s for s in old_syms if s in new_syms and old_syms[s] != new_syms[s]]
 
-    if removed:
+    if removed or changed:
         verdict, exit_code = ABIVerdict.BREAKING, 12
     elif added:
         verdict, exit_code = ABIVerdict.COMPATIBLE, 4
@@ -191,8 +192,10 @@ def _symbols_only_compare(old_lib: Path, new_lib: Path) -> "Optional[ABIComparis
         baseline_old=str(old_lib),
         baseline_new=str(new_lib),
         functions_removed=len(removed),
+        functions_changed=len(changed),
         functions_added=len(added),
         public_removed=removed,
+        public_changed=changed,
         public_added=added,
         stdout="[nm-D fallback: abidw unavailable — symbol names only, no type info]",
     )
@@ -229,19 +232,24 @@ def cmd_compare(args):
             old_abi = tmp / "old.abi"
             new_abi = tmp / "new.abi"
 
-            _ok, _reason = _generate_baseline(old_lib, old_abi, args.verbose)
-            if not _ok:
-                print(f"Error: {_reason}", file=sys.stderr)
-                return 1
-            _ok, _reason = _generate_baseline(new_lib, new_abi, args.verbose)
-            if not _ok:
-                print(f"Error: {_reason}", file=sys.stderr)
-                return 1
+            _ok_old, _reason_old = _generate_baseline(old_lib, old_abi, args.verbose)
+            old_baseline = old_abi if _ok_old else old_lib
+            _ok_new, _reason_new = _generate_baseline(new_lib, new_abi, args.verbose)
+            new_baseline = new_abi if _ok_new else new_lib
 
-            # Compare
+            # Compare (nm-D fallback when abidw fails for either side)
             analyzer = ABIAnalyzer(suppressions=suppressions)
             api_filter = PublicAPIFilter()
-            result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
+            if _is_so_file(old_baseline) or _is_so_file(new_baseline):
+                if args.verbose:
+                    reason = _reason_old if not _ok_old else _reason_new
+                    print(f"  ⚠ abidw failed ({reason}), falling back to nm-D", file=sys.stderr)
+                result = _symbols_only_compare(old_baseline, new_baseline)
+                if result is None:
+                    print("Error: nm-D fallback failed", file=sys.stderr)
+                    return 1
+            else:
+                result = analyzer.compare(old_baseline, new_baseline, api_filter, api_filter)
 
         # Output
         if args.format == "json":
@@ -559,32 +567,34 @@ def cmd_validate(args):
         analyzer = ABIAnalyzer(suppressions=suppressions)
         api_filter = PublicAPIFilter()
 
-        # Cache baselines: version_str → Path|None
-        abi_cache: dict[str, Optional[Path]] = {}
-        abi_reason_cache: dict[str, str] = {}
+        # Cache baselines: (pkg_name, ver_str) → Path|None  (avoids aliasing when
+        # different APT packages share the same version string)
+        abi_cache: dict[tuple, Optional[Path]] = {}
+        abi_reason_cache: dict[tuple, str] = {}
 
         _apt_version_to_pkg = locals().get("_apt_version_to_pkg", {})
 
         def get_abi(ver_str: str, idx: int) -> "Optional[Path]":
-            if ver_str in abi_cache:
-                return abi_cache[ver_str]
             pkg_name = _apt_version_to_pkg.get(ver_str, spec.package)
+            key = (pkg_name, ver_str)
+            if key in abi_cache:
+                return abi_cache[key]
             vspec = PackageSpec(
                 channel=spec.channel, package=pkg_name, version=ver_str
             )
             lib = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name, args.verbose)
             if not lib:
-                abi_cache[ver_str] = None
-                abi_reason_cache[ver_str] = "library not found or download failed"
+                abi_cache[key] = None
+                abi_reason_cache[key] = "library not found or download failed"
                 return None
             abi_path = tmp / f"{idx}.abi"
             _ok_abi, _abidw_reason = _generate_baseline(lib, abi_path, args.verbose)
             if not _ok_abi:
                 # nm-D fallback: store .so path so compare loop can use nm -D
-                abi_cache[ver_str] = lib
-                abi_reason_cache[ver_str] = _abidw_reason
+                abi_cache[key] = lib
+                abi_reason_cache[key] = _abidw_reason
                 return lib
-            abi_cache[ver_str] = abi_path
+            abi_cache[key] = abi_path
             return abi_path
 
         for i in range(len(parsed) - 1):
@@ -596,7 +606,12 @@ def cmd_validate(args):
             new_abi = get_abi(new_v, i * 2 + 1)
 
             if old_abi is None or new_abi is None:
-                reason = abi_reason_cache.get(old_v) if old_abi is None else abi_reason_cache.get(new_v)
+                if old_abi is None:
+                    old_pkg = _apt_version_to_pkg.get(old_v, spec.package)
+                    reason = abi_reason_cache.get((old_pkg, old_v))
+                else:
+                    new_pkg = _apt_version_to_pkg.get(new_v, spec.package)
+                    reason = abi_reason_cache.get((new_pkg, new_v))
                 skipped.append({"from": old_v, "to": new_v, "kind": kind, "reason": reason or "library not found or abidw failed"})
                 rows.append((old_v, new_v, kind, None, None))
                 continue
