@@ -1,3 +1,4 @@
+import sys
 """APT/Debian package source adapter."""
 
 import subprocess
@@ -57,7 +58,7 @@ class AptSource(PackageSource):
         url = index_url or self.INTEL_APT_INDEX
         if not url.startswith("https://"):
             raise ValueError(f"Only https:// index URLs allowed, got: {url}")
-        base = "/".join(url.split("/")[:3])  # https://host
+        base = url[:url.find("/dists/")]  # https://host/repo (e.g. .../oneapi)
 
         with urllib.request.urlopen(url, timeout=60) as resp:
             index_data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
@@ -99,7 +100,7 @@ class AptSource(PackageSource):
             vm = _re.search(r"^Version: (.+)$", block, _re.M)
             fm = _re.search(r"^Filename: (.+)$", block, _re.M)
             if pm and vm and fm and pat.search(pm.group(1).strip()):
-                entries.append((vm.group(1).strip(), fm.group(1).strip()))
+                entries.append((vm.group(1).strip(), fm.group(1).strip(), pm.group(1).strip()))
 
         from packaging.version import Version
 
@@ -154,11 +155,11 @@ class AptSource(PackageSource):
         
         # Check if already downloaded
         if output_file.exists():
-            print(f"✓ {filename} already downloaded")
+            print(f"✓ {filename} already downloaded", file=sys.stderr)
             return output_file
         
         # Download
-        print(f"Downloading {url}...")
+        print(f"Downloading {url}...", file=sys.stderr)
         try:
             urllib.request.urlretrieve(url, output_file)
             return output_file

@@ -142,6 +142,57 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
     return lib
 
 
+def _is_so_file(p: Path) -> bool:
+    """True if path is a .so library file rather than an .abi baseline."""
+    return '.so' in p.name and not p.name.endswith('.abi')
+
+
+def _symbols_only_compare(old_lib: Path, new_lib: Path) -> "Optional[ABIComparisonResult]":
+    """Symbol-table diff via nm -D — fallback when abidw crashes (e.g. libabigail DWARF bug).
+
+    Returns ABIComparisonResult with symbol-level changes. No type information.
+    Result includes a note in stdout indicating this is a fallback comparison.
+    """
+    def _get_syms(lib: Path) -> "Optional[dict]":
+        r = subprocess.run(["nm", "-D", "--defined-only", str(lib)],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        syms: dict = {}
+        for line in r.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) == 3 and parts[1] in ("T", "D", "B", "V", "W", "i", "I"):
+                syms[parts[2]] = parts[1]
+        return syms
+
+    old_syms = _get_syms(old_lib)
+    new_syms = _get_syms(new_lib)
+    if old_syms is None or new_syms is None:
+        return None
+
+    removed = [s for s in old_syms if s not in new_syms]
+    added   = [s for s in new_syms if s not in old_syms]
+
+    if removed:
+        verdict, exit_code = ABIVerdict.BREAKING, 12
+    elif added:
+        verdict, exit_code = ABIVerdict.COMPATIBLE, 4
+    else:
+        verdict, exit_code = ABIVerdict.NO_CHANGE, 0
+
+    return ABIComparisonResult(
+        verdict=verdict,
+        exit_code=exit_code,
+        baseline_old=str(old_lib),
+        baseline_new=str(new_lib),
+        functions_removed=len(removed),
+        functions_added=len(added),
+        public_removed=removed,
+        public_added=added,
+        stdout="[nm-D fallback: abidw unavailable — symbol names only, no type info]",
+    )
+
+
 def cmd_compare(args):
     """Execute compare command."""
     try:
@@ -183,7 +234,17 @@ def cmd_compare(args):
             # Compare
             analyzer = ABIAnalyzer(suppressions=suppressions)
             api_filter = PublicAPIFilter()
-            result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
+            if _is_so_file(old_abi) or _is_so_file(new_abi):
+                result = _symbols_only_compare(old_abi, new_abi)
+                if result is None:
+                    skipped.append({"from": old_v, "to": new_v, "kind": kind,
+                                    "reason": "nm-D fallback also failed"})
+                    rows.append((old_v, new_v, kind, None, None))
+                    continue
+                if args.verbose:
+                    print(f"  ⚠ nm-D fallback: {old_v}→{new_v}", file=sys.stderr)
+            else:
+                result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
 
         # Output
         if args.format == "json":
@@ -251,9 +312,8 @@ def cmd_compatible(args):
             all_versions = source.list_versions(base_spec.package)
         elif base_spec.channel == "apt":
             if not args.apt_pkg_pattern:
-                print("Error: --apt-pkg-pattern required for apt channel", file=sys.stderr)
-                return 1
-            all_versions = [v for v, _ in source.list_versions(args.apt_pkg_pattern)]
+                args.apt_pkg_pattern = f"^{_re.escape(base_spec.package)}$"
+            all_versions = [v for v, _f, _pkg in source.list_versions(args.apt_pkg_pattern)]
         else:
             print(f"Error: compatible not supported for channel '{base_spec.channel}'", file=sys.stderr)
             return 1
@@ -424,9 +484,10 @@ def cmd_validate(args):
             all_versions = source.list_versions(spec.package)
         elif spec.channel == "apt":
             if not args.apt_pkg_pattern:
-                print("Error: --apt-pkg-pattern required for apt channel", file=sys.stderr)
-                return 1
-            all_versions = [v for v, _ in source.list_versions(args.apt_pkg_pattern)]
+                args.apt_pkg_pattern = f"^{_re.escape(spec.package)}$"
+            _apt_triples = source.list_versions(args.apt_pkg_pattern)
+            _apt_version_to_pkg = {v: pkg for v, _f, pkg in _apt_triples}
+            all_versions = [v for v, _f, _pkg in _apt_triples]
         else:
             print(f"Error: validate not supported for channel '{spec.channel}'", file=sys.stderr)
             return 1
@@ -500,11 +561,14 @@ def cmd_validate(args):
         # Cache baselines: version_str → Path|None
         abi_cache: dict = {}
 
+        _apt_version_to_pkg = locals().get("_apt_version_to_pkg", {})
+
         def get_abi(ver_str: str, idx: int) -> "Optional[Path]":
             if ver_str in abi_cache:
                 return abi_cache[ver_str]
+            pkg_name = _apt_version_to_pkg.get(ver_str, spec.package)
             vspec = PackageSpec(
-                channel=spec.channel, package=spec.package, version=ver_str
+                channel=spec.channel, package=pkg_name, version=ver_str
             )
             lib = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name, args.verbose)
             if not lib:
@@ -512,8 +576,8 @@ def cmd_validate(args):
                 return None
             abi_path = tmp / f"{idx}.abi"
             if not _generate_baseline(lib, abi_path, args.verbose):
-                abi_cache[ver_str] = None
-                return None
+                abi_cache[ver_str] = lib  # store .so for nm-D fallback
+                return lib
             abi_cache[ver_str] = abi_path
             return abi_path
 
@@ -679,7 +743,7 @@ def cmd_list(args):
                     f"package '{spec.package}'; results may be unrelated.",
                     file=sys.stderr,
                 )
-            entries = source.list_versions(args.apt_pkg_pattern)
+            entries = [(v, f) for v, f, _pkg in source.list_versions(args.apt_pkg_pattern)]
 
         else:
             print(f"Error: list not supported for channel '{spec.channel}'", file=sys.stderr)
@@ -779,7 +843,7 @@ Exit codes:
         help="Validate SemVer compliance over a range of consecutive versions")
     val.add_argument("spec", help="Package spec: channel:package (e.g. intel:oneccl-cpu)")
     val.add_argument("--format", choices=["text", "json"], default="text")
-    val.add_argument("--library-name", help="Target .so filename (e.g. libccl.so)")
+    val.add_argument("--library-name", help="Target .so filename (e.g. libccl.so). Use 'all' to scan every .so in the package.")
     val.add_argument("--suppressions", help="Path to abidiff suppressions file")
     val.add_argument("--filter", help="Regex filter on version list (e.g. ^2021.14)")
     val.add_argument("--from-version", help="Start of version range (inclusive)")
