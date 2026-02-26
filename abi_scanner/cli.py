@@ -489,6 +489,7 @@ def cmd_validate(args):
     ICON    = {0: "✅", 4: "✅", 8: "⚠️ ", 12: "❌"}
 
     rows = []      # (old_v, new_v, kind, result|None, compliant)
+    skipped = []   # transitions where baseline could not be generated
     violations = []
 
     with tempfile.TemporaryDirectory(prefix="abi_scanner_val_") as tmpdir:
@@ -525,6 +526,7 @@ def cmd_validate(args):
             new_abi = get_abi(new_v, i * 2 + 1)
 
             if old_abi is None or new_abi is None:
+                skipped.append({"from": old_v, "to": new_v, "kind": kind})
                 rows.append((old_v, new_v, kind, None, None))
                 continue
 
@@ -569,6 +571,7 @@ def cmd_validate(args):
                 for old_v, new_v, kind, r, c in rows
             ],
             "violation_details": violations,
+            "skipped": skipped,
         }
         print(json.dumps(out, indent=2))
     else:
@@ -599,8 +602,15 @@ def cmd_validate(args):
         else:
             print("No violations found. ✅")
 
+    if skipped:
+        print(f"\nWarning: {len(skipped)} transition(s) skipped (library not found or abidw failed):")
+        for sk in skipped:
+            print(f"  ⚠️  {sk['from']} -> {sk['to']}  [{sk['kind'].upper()}]")
+        if args.fail_on != "none":
+            print("  Note: skipped transitions are NOT counted as violations.", file=sys.stderr)
+
     if violations and args.fail_on != "none":
-        return min(len(violations), 125)  # shell exit codes capped at 255; 125 avoids signal-reserved range
+        return min(len(violations), 125)  # shell exit codes capped at 125 to avoid wraparound
     return 0
 
 
@@ -749,7 +759,7 @@ Exit codes:
     val.add_argument("--strict", action="store_true",
                      help="Patch releases must be NO_CHANGE (exit 0); default allows COMPATIBLE (exit 4)")
     val.add_argument("--fail-on", choices=["violations", "none"], default="none",
-                     help="Return non-zero exit code equal to violation count")
+                     help="Return non-zero exit code based on violation count (capped at 125)")
     val.add_argument("-v", "--verbose", action="store_true")
 
     # list
