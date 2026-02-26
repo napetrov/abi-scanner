@@ -197,6 +197,21 @@ class ABIComparisonResult:
             tiers[tier][ns].append(demangled)
         return {t: dict(v) for t, v in tiers.items() if v}
 
+    @property
+    def tier_groups(self) -> dict:
+        """Lazily computed and cached tier groupings for all symbol lists.
+
+        Avoids redundant c++filt subprocess calls when multiple callers
+        (format_details, to_dict, CLI JSON output) need the same groupings.
+        """
+        if not hasattr(self, "_tier_groups_cache"):
+            object.__setattr__(self, "_tier_groups_cache", {
+                "removed": self.group_by_tier_and_ns(self.public_removed) if self.public_removed else {},
+                "added":   self.group_by_tier_and_ns(self.public_added)   if self.public_added   else {},
+                "changed": self.group_by_tier_and_ns(self.public_changed) if self.public_changed else {},
+            })
+        return self._tier_groups_cache
+
     def format_details(self, max_per_ns: int = 5) -> str:
         """Format symbol changes grouped by tier (public/preview/internal) then namespace."""
         TIER_ORDER = ["public", "preview", "internal"]
@@ -220,16 +235,12 @@ class ABIComparisonResult:
             return out
 
         lines = []
-        # Precompute once — each call demangles all symbols, avoid repeating per tier
-        removed_by_tier = self.group_by_tier_and_ns(self.public_removed) if self.public_removed else {}
-        added_by_tier   = self.group_by_tier_and_ns(self.public_added)   if self.public_added   else {}
-        changed_by_tier = self.group_by_tier_and_ns(self.public_changed) if self.public_changed else {}
-
+        tg = self.tier_groups  # cached — demangling runs once regardless of callers
         for tier in TIER_ORDER:
             h = TIER_HEADER[tier]
-            lines.extend(_fmt_group(h["removed"], "-", removed_by_tier.get(tier, {})))
-            lines.extend(_fmt_group(h["added"],   "+", added_by_tier.get(tier, {})))
-            lines.extend(_fmt_group(h["changed"],  "~", changed_by_tier.get(tier, {})))
+            lines.extend(_fmt_group(h["removed"], "-", tg["removed"].get(tier, {})))
+            lines.extend(_fmt_group(h["added"],   "+", tg["added"].get(tier, {})))
+            lines.extend(_fmt_group(h["changed"],  "~", tg["changed"].get(tier, {})))
 
         return "\n".join(lines) if lines else ""
     
@@ -264,11 +275,7 @@ class ABIComparisonResult:
                 }
             },
             "details": {
-                "by_tier": {
-                    "removed": self.group_by_tier_and_ns(self.public_removed),
-                    "added":   self.group_by_tier_and_ns(self.public_added),
-                    "changed": self.group_by_tier_and_ns(self.public_changed),
-                },
+                "by_tier": self.tier_groups,
                 "symbols_removed": self.public_removed,
                 "symbols_added":   self.public_added,
                 "symbols_changed": self.public_changed,
