@@ -548,6 +548,7 @@ def cmd_validate(args):
                     "verdict": VERDICT.get(result.exit_code, f"rc={result.exit_code}"),
                     "functions_removed": result.functions_removed,
                     "functions_added": result.functions_added,
+                    "_result": result,  # keep for --details output
                 })
 
     # ── Output ────────────────────────────────────────────────────────────────
@@ -561,16 +562,40 @@ def cmd_validate(args):
             "compliant": ok,
             "violations": len(violations),
             "strict": args.strict,
+            "violation_details": [
+                    {
+                        "from": e["from"], "to": e["to"], "kind": e["kind"],
+                        "exit_code": e["exit_code"], "verdict": e["verdict"],
+                        "functions_removed": e["functions_removed"],
+                        "functions_added": e["functions_added"],
+                        "symbols_by_tier": {
+                            "removed": e["_result"].group_by_tier_and_ns(e["_result"].public_removed) if e.get("_result") else {},
+                            "added":   e["_result"].group_by_tier_and_ns(e["_result"].public_added)   if e.get("_result") else {},
+                            "changed": e["_result"].group_by_tier_and_ns(e["_result"].public_changed) if e.get("_result") else {},
+                        },
+                        "symbols_removed": e["_result"].public_removed if e.get("_result") else [],
+                        "symbols_added":   e["_result"].public_added   if e.get("_result") else [],
+                        "symbols_changed": e["_result"].public_changed if e.get("_result") else [],
+                    }
+                    for e in violations
+                ],
             "rows": [
-                {
-                    "from": old_v, "to": new_v, "kind": kind,
-                    "exit_code": r.exit_code if r else None,
-                    "verdict": VERDICT.get(r.exit_code, f"rc={r.exit_code}") if r else "SKIPPED",
-                    "compliant": c,
-                }
-                for old_v, new_v, kind, r, c in rows
-            ],
-            "violation_details": violations,
+                    {
+                        "from": old_v, "to": new_v, "kind": kind,
+                        "exit_code": r.exit_code if r else None,
+                        "verdict": VERDICT.get(r.exit_code, f"rc={r.exit_code}") if r else "SKIPPED",
+                        "compliant": c,
+                        "symbols_by_tier": {
+                            "removed": r.group_by_tier_and_ns(r.public_removed) if r else {},
+                            "added":   r.group_by_tier_and_ns(r.public_added)   if r else {},
+                            "changed": r.group_by_tier_and_ns(r.public_changed) if r else {},
+                        },
+                        "symbols_removed": r.public_removed if r else [],
+                        "symbols_added":   r.public_added   if r else [],
+                        "symbols_changed": r.public_changed if r else [],
+                    }
+                    for old_v, new_v, kind, r, c in rows
+                ],
             "skipped": skipped,
         }
         print(json.dumps(out, indent=2))
@@ -599,6 +624,11 @@ def cmd_validate(args):
             for v in violations:
                 print(f"  ❌ {v['from']} → {v['to']}  [{v['kind'].upper()}]"
                       f"  {v['verdict']}  (-{v['functions_removed']} +{v['functions_added']})")
+                if v.get("_result"):
+                    det = v["_result"].format_details(max_per_ns=args.details_limit)
+                    if det:
+                        for dline in det.splitlines():
+                            print(f"    {dline}")
         else:
             print("No violations found. ✅")
 
@@ -760,6 +790,8 @@ Exit codes:
                      help="Patch releases must be NO_CHANGE (exit 0); default allows COMPATIBLE (exit 4)")
     val.add_argument("--fail-on", choices=["violations", "none"], default="none",
                      help="Return non-zero exit code based on violation count (capped at 125)")
+    val.add_argument("--details-limit", type=int, default=20,
+                     help="Max symbols per namespace shown per violation (default: 20, 0 = unlimited)")
     val.add_argument("-v", "--verbose", action="store_true")
 
     # list

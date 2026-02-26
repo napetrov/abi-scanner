@@ -70,6 +70,23 @@ def extract_namespace(demangled: str) -> str:
     return '::'.join(ns_parts) if ns_parts else "(global)"
 
 
+
+def classify_symbol_tier(demangled: str) -> str:
+    """Classify a demangled symbol into public/preview/internal tier.
+
+    Tiers:
+      internal : ::detail::, ::internal::, ::backend::, ::impl::
+      preview  : ::preview::, ::experimental::, ::unstable::
+      public   : everything else (stable public API)
+    """
+    lowered = demangled.lower()
+    if any(pat in lowered for pat in ('::detail::', '::internal::', '::backend::', '::impl::')):
+        return 'internal'
+    if any(pat in lowered for pat in ('::preview::', '::experimental::', '::unstable::')):
+        return 'preview'
+    return 'public'
+
+
 class ABIVerdict(Enum):
     """ABI compatibility verdict based on abidiff exit code"""
     NO_CHANGE = 0      # Exit 0: No ABI changes
@@ -166,40 +183,54 @@ class ABIComparisonResult:
         
         return " | ".join(lines)
     
+    def group_by_tier_and_ns(self, symbols: list) -> dict:
+        """Group symbols by tier (public/preview/internal) then by namespace."""
+        tiers: dict = {
+            "public": defaultdict(list),
+            "preview": defaultdict(list),
+            "internal": defaultdict(list),
+        }
+        for sym in symbols:
+            demangled = demangle_symbol(sym)
+            tier = classify_symbol_tier(demangled)
+            ns = extract_namespace(demangled)
+            tiers[tier][ns].append(demangled)
+        return {t: dict(v) for t, v in tiers.items() if v}
+
     def format_details(self, max_per_ns: int = 5) -> str:
-        """Format detailed symbol changes grouped by namespace."""
+        """Format symbol changes grouped by tier (public/preview/internal) then namespace."""
+        TIER_ORDER = ["public", "preview", "internal"]
+        TIER_HEADER = {
+            "public":   {"removed": "📉 Removed (public)", "added": "📈 Added (public)", "changed": "🔄 Changed (public)"},
+            "preview":  {"removed": "📉 Removed (preview/experimental)", "added": "📈 Added (preview/experimental)", "changed": "🔄 Changed (preview/experimental)"},
+            "internal": {"removed": "📉 Removed (internal — not suppressed)", "added": "📈 Added (internal)", "changed": "🔄 Changed (internal)"},
+        }
+
+        def _fmt_group(header: str, icon: str, grouped: dict) -> list:
+            if not grouped:
+                return []
+            out = [f"\n{header}:"]
+            for ns, syms in sorted(grouped.items()):
+                out.append(f"  [{ns}]")
+                show = syms if max_per_ns == 0 else syms[:max_per_ns]
+                for sym in show:
+                    out.append(f"    {icon} {sym}")
+                if max_per_ns and len(syms) > max_per_ns:
+                    out.append(f"    ... and {len(syms) - max_per_ns} more")
+            return out
+
         lines = []
-        
-        if self.public_removed:
-            lines.append("\n📉 Removed (public API):")
-            grouped = self.group_by_namespace(self.public_removed)
-            for ns, syms in sorted(grouped.items()):
-                lines.append(f"  {ns}:")
-                for sym in syms[:max_per_ns]:
-                    lines.append(f"    - {sym}")
-                if len(syms) > max_per_ns:
-                    lines.append(f"    ... and {len(syms) - max_per_ns} more")
-        
-        if self.public_added:
-            lines.append("\n📈 Added (public API):")
-            grouped = self.group_by_namespace(self.public_added)
-            for ns, syms in sorted(grouped.items()):
-                lines.append(f"  {ns}:")
-                for sym in syms[:max_per_ns]:
-                    lines.append(f"    + {sym}")
-                if len(syms) > max_per_ns:
-                    lines.append(f"    ... and {len(syms) - max_per_ns} more")
-        
-        if self.public_changed:
-            lines.append("\n🔄 Changed (public API):")
-            grouped = self.group_by_namespace(self.public_changed)
-            for ns, syms in sorted(grouped.items()):
-                lines.append(f"  {ns}:")
-                for sym in syms[:max_per_ns]:
-                    lines.append(f"    ~ {sym}")
-                if len(syms) > max_per_ns:
-                    lines.append(f"    ... and {len(syms) - max_per_ns} more")
-        
+        # Precompute once — each call demangles all symbols, avoid repeating per tier
+        removed_by_tier = self.group_by_tier_and_ns(self.public_removed) if self.public_removed else {}
+        added_by_tier   = self.group_by_tier_and_ns(self.public_added)   if self.public_added   else {}
+        changed_by_tier = self.group_by_tier_and_ns(self.public_changed) if self.public_changed else {}
+
+        for tier in TIER_ORDER:
+            h = TIER_HEADER[tier]
+            lines.extend(_fmt_group(h["removed"], "-", removed_by_tier.get(tier, {})))
+            lines.extend(_fmt_group(h["added"],   "+", added_by_tier.get(tier, {})))
+            lines.extend(_fmt_group(h["changed"],  "~", changed_by_tier.get(tier, {})))
+
         return "\n".join(lines) if lines else ""
     
     def to_dict(self) -> dict:
@@ -233,9 +264,14 @@ class ABIComparisonResult:
                 }
             },
             "details": {
-                "public_added_by_ns": self.group_by_namespace(self.public_added),
-                "public_removed_by_ns": self.group_by_namespace(self.public_removed),
-                "public_changed_by_ns": self.group_by_namespace(self.public_changed),
+                "by_tier": {
+                    "removed": self.group_by_tier_and_ns(self.public_removed),
+                    "added":   self.group_by_tier_and_ns(self.public_added),
+                    "changed": self.group_by_tier_and_ns(self.public_changed),
+                },
+                "symbols_removed": self.public_removed,
+                "symbols_added":   self.public_added,
+                "symbols_changed": self.public_changed,
             }
         }
 
