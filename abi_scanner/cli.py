@@ -11,6 +11,7 @@ from typing import Optional
 
 from .package_spec import PackageSpec
 from .sources import create_source
+from .sources.apt import normalize_debian_version
 from .analyzer import ABIAnalyzer, PublicAPIFilter, ABIVerdict, ABIComparisonResult, demangle_symbol, classify_symbol_tier
 
 
@@ -71,7 +72,8 @@ def _generate_baseline(lib_path: Path, output_path: Path,
 
 def _download_and_prepare(spec: PackageSpec, work_dir: Path,
                            library_name: Optional[str],
-                           verbose: bool = False) -> Optional[Path]:
+                           verbose: bool = False,
+                           apt_index_url: Optional[str] = None) -> Optional[Path]:
     """Download, extract, and find the target library for a package spec.
 
     Returns path to the .so file, or None on failure.
@@ -114,7 +116,8 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
     # APT: resolve .deb URL via AptSource.resolve_url(), then download
     if spec.channel == "apt":
         try:
-            full_url = source.resolve_url(spec.package, spec.version)
+            full_url = source.resolve_url(spec.package, spec.version,
+                                          index_url=apt_index_url)
         except ValueError as e:
             print(f"  APT: {e}", file=sys.stderr)
             return None
@@ -622,6 +625,7 @@ def cmd_validate(args):
     source = create_source(spec)
     library_name: Optional[str] = getattr(args, "library_name", None)
     suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
+    _apt_index_url: Optional[str] = getattr(args, "apt_index_url", None)
 
     # ── Gather versions ───────────────────────────────────────────────────────
     try:
@@ -630,7 +634,7 @@ def cmd_validate(args):
         elif spec.channel == "apt":
             if not args.apt_pkg_pattern:
                 args.apt_pkg_pattern = f"^{_re.escape(spec.package)}$"
-            _apt_triples = source.list_versions(args.apt_pkg_pattern)
+            _apt_triples = source.list_versions(args.apt_pkg_pattern, index_url=_apt_index_url)
             _apt_version_to_pkg = {v: pkg for v, _f, pkg in _apt_triples}
             all_versions = [v for v, _f, _pkg in _apt_triples]
         else:
@@ -650,10 +654,14 @@ def cmd_validate(args):
             return 1
 
     # Parse & sort valid versions; skip unparseable
+    # For APT channel: normalize Debian version strings (e.g. 1.3.26241~22.04 → 1.3.26241)
+    # before PEP 440 parsing; original string is preserved for display/download.
+    _is_apt = (spec.channel == "apt")
     parsed = []
     for v in all_versions:
+        pep_v = normalize_debian_version(v) if _is_apt else v
         try:
-            parsed.append((Version(v), v))
+            parsed.append((Version(pep_v), v))
         except InvalidVersion:
             if args.verbose:
                 print(f"  Skipping unparseable version: {v}", file=sys.stderr)
@@ -662,14 +670,14 @@ def cmd_validate(args):
     # from/to version range filter
     if args.from_version:
         try:
-            fv = Version(args.from_version)
+            fv = Version(normalize_debian_version(args.from_version) if _is_apt else args.from_version)
             parsed = [(pv, v) for pv, v in parsed if pv >= fv]
         except InvalidVersion as e:
             print(f"Error: invalid --from-version: {e}", file=sys.stderr)
             return 1
     if args.to_version:
         try:
-            tv = Version(args.to_version)
+            tv = Version(normalize_debian_version(args.to_version) if _is_apt else args.to_version)
             parsed = [(pv, v) for pv, v in parsed if pv <= tv]
         except InvalidVersion as e:
             print(f"Error: invalid --to-version: {e}", file=sys.stderr)
@@ -718,7 +726,8 @@ def cmd_validate(args):
             vspec = PackageSpec(
                 channel=spec.channel, package=pkg_name, version=ver_str
             )
-            lib = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name, args.verbose)
+            lib = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name,
+                                        args.verbose, apt_index_url=_apt_index_url)
             if not lib:
                 abi_cache[key] = None
                 abi_reason_cache[key] = "library not found or download failed"
@@ -983,13 +992,18 @@ def cmd_list(args):
             entries = [(v, None) for v in versions]
 
         elif spec.channel == "apt":
+            _apt_index_url = getattr(args, "apt_index_url", None)
             if not args.apt_pkg_pattern:
-                print(
-                    "Error: --apt-pkg-pattern required for apt channel "
-                    "(e.g. ^intel-oneapi-ccl-2021)",
-                    file=sys.stderr,
-                )
-                return 1
+                if _apt_index_url:
+                    # With a custom index URL, default to exact package name match
+                    args.apt_pkg_pattern = f"^{_re.escape(spec.package)}$"
+                else:
+                    print(
+                        "Error: --apt-pkg-pattern required for apt channel "
+                        "(e.g. ^intel-oneapi-ccl-2021)",
+                        file=sys.stderr,
+                    )
+                    return 1
             # Ensure pattern at least mentions the positional package name
             pkg_hint = spec.package.lower()
             pat_lower = args.apt_pkg_pattern.lower()
@@ -999,7 +1013,8 @@ def cmd_list(args):
                     f"package '{spec.package}'; results may be unrelated.",
                     file=sys.stderr,
                 )
-            entries = [(v, f) for v, f, _pkg in source.list_versions(args.apt_pkg_pattern)]
+            entries = [(v, f) for v, f, _pkg in source.list_versions(
+                args.apt_pkg_pattern, index_url=_apt_index_url)]
 
         else:
             print(f"Error: list not supported for channel '{spec.channel}'", file=sys.stderr)
@@ -1111,6 +1126,9 @@ Exit codes:
     val.add_argument("--to-version",   help="End of version range (inclusive)")
     val.add_argument("--apt-pkg-pattern",
                      help="Regex for APT package names (required for apt channel)")
+    val.add_argument("--apt-index-url", metavar="URL",
+                     help="Custom APT Packages.gz URL (e.g. Intel GPU driver repo). "
+                          "Overrides the default Intel oneAPI index for apt channel.")
     val.add_argument("--strict", action="store_true",
                      help="Patch releases must be NO_CHANGE (exit 0); default allows COMPATIBLE (exit 4)")
     val.add_argument("--fail-on", choices=["violations", "none"], default="none",
@@ -1126,6 +1144,9 @@ Exit codes:
     lst.add_argument("--filter", help="Regex to filter version list (e.g. ^2021.14)")
     lst.add_argument("--apt-pkg-pattern",
                      help="Regex for APT package names (required for apt channel)")
+    lst.add_argument("--apt-index-url", metavar="URL",
+                     help="Custom APT Packages.gz URL (e.g. Intel GPU driver repo). "
+                          "Overrides the default Intel oneAPI index for apt channel.")
 
     return parser
 

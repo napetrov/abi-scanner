@@ -15,6 +15,31 @@ from .base import PackageSource
 from .utils import safe_extract_tar
 
 
+def normalize_debian_version(ver: str) -> str:
+    """Normalize a Debian version string to PEP 440.
+
+    Handles the ``epoch:upstream-revision~distro`` format by:
+    1. Dropping epoch (``N:``) prefix — rare in Intel repos.
+    2. Stripping the distro suffix (``~22.04``, ``~u22.04``, etc.).
+    3. Replacing ``-`` (Debian revision separator) with ``.``.
+
+    Examples::
+
+        "1.3.26241.67-803.126~22.04" → "1.3.26241.67.803.126"
+        "23.43.27642.67-803.126~22.04" → "23.43.27642.67.803.126"
+        "2025.0.0-1169"               → "2025.0.0.1169"
+        "1:1.3.0-1~focal"             → "1.3.0.1"
+    """
+    # Drop epoch (e.g. "1:")
+    if ":" in ver:
+        ver = ver.split(":", 1)[1]
+    # Strip distro/backport suffix (~22.04, ~u22.04, ~focal, etc.)
+    ver = re.sub(r"~[^~]+$", "", ver)
+    # Debian revision: replace first '-' and any subsequent '-' with '.'
+    ver = ver.replace("-", ".")
+    return ver
+
+
 class AptSource(PackageSource):
     """Adapter for APT repositories (.deb packages).
     
@@ -106,15 +131,14 @@ class AptSource(PackageSource):
             if pm and vm and fm and pat.search(pm.group(1).strip()):
                 entries.append((vm.group(1).strip(), fm.group(1).strip(), pm.group(1).strip()))
 
-        from packaging.version import Version
+        from packaging.version import Version, InvalidVersion
 
         def _sort_key(t):
             try:
-                return Version(t[0])
-            except Exception:
-                # Fallback: pad numeric segments to ensure correct lexicographic order
-                import re as _re
-                parts = _re.split(r'[^0-9]+', t[0])
+                return Version(normalize_debian_version(t[0]))
+            except InvalidVersion:
+                # Last-resort: pad numeric segments
+                parts = re.split(r'[^0-9]+', normalize_debian_version(t[0]))
                 return tuple(int(x) if x else 0 for x in parts)
 
         return sorted(entries, key=_sort_key)
