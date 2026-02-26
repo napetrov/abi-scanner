@@ -403,9 +403,9 @@ def cmd_validate(args):
     from packaging.version import Version, InvalidVersion
 
     RULES = {
-        "patch": {"allowed_codes": {0, 4}, "strict_codes": {0}, "label": "PATCH"},
-        "minor": {"allowed_codes": {0, 4}, "label": "MINOR"},
-        "major": {"allowed_codes": {0, 4, 8, 12}, "label": "MAJOR"},
+        "patch": {"allowed_codes": {0, 4}, "strict_codes": {0},      "label": "PATCH"},
+        "minor": {"allowed_codes": {0, 4}, "strict_codes": {0, 4},  "label": "MINOR"},
+        "major": {"allowed_codes": {0, 4, 8, 12}, "strict_codes": {0, 4, 8, 12}, "label": "MAJOR"},
     }
 
     try:
@@ -578,7 +578,7 @@ def cmd_validate(args):
         print("-" * 75)
         for old_v, new_v, kind, result, compliant in rows:
             if result is None:
-                line = f"  {'SKIPPED':}"
+                line = "  SKIPPED"
             else:
                 icon = ICON.get(result.exit_code, "?")
                 verdict = VERDICT.get(result.exit_code, f"rc={result.exit_code}")
@@ -587,7 +587,7 @@ def cmd_validate(args):
                 if result.functions_removed or result.functions_added:
                     stats = f"  (-{result.functions_removed} +{result.functions_added})"
                 line = f"  {icon} {kind:<8} {verdict}{stats}{flag}"
-            print(f"  {old_v:<20}  {new_v:<20}{line}")
+            print(f"  {old_v:<22}{new_v:<22}{line}")
         print()
         pct = int(100 * ok / total) if total else 0
         print(f"SemVer compliance: {pct}% ({ok}/{total} transitions)")
@@ -600,7 +600,7 @@ def cmd_validate(args):
             print("No violations found. ✅")
 
     if violations and args.fail_on != "none":
-        return len(violations)
+        return min(len(violations), 125)  # shell exit codes capped at 255; 125 avoids signal-reserved range
     return 0
 
 
