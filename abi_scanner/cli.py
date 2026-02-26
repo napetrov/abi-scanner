@@ -398,9 +398,220 @@ def cmd_compatible(args):
 
 
 def cmd_validate(args):
-    print(f"Validating SemVer compliance for {args.spec}")
-    print("(not yet implemented)")
-    return 1
+    """Validate SemVer compliance over a range of consecutive versions."""
+    import re as _re
+    from packaging.version import Version, InvalidVersion
+
+    RULES = {
+        "patch": {"allowed_codes": {0, 4}, "strict_codes": {0},      "label": "PATCH"},
+        "minor": {"allowed_codes": {0, 4}, "strict_codes": {0, 4},  "label": "MINOR"},
+        "major": {"allowed_codes": {0, 4, 8, 12}, "strict_codes": {0, 4, 8, 12}, "label": "MAJOR"},
+    }
+
+    try:
+        spec = PackageSpec.parse(args.spec, require_version=False)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    source = create_source(spec)
+    library_name: Optional[str] = getattr(args, "library_name", None)
+    suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
+
+    # ── Gather versions ───────────────────────────────────────────────────────
+    try:
+        if spec.channel in {"conda-forge", "intel"}:
+            all_versions = source.list_versions(spec.package)
+        elif spec.channel == "apt":
+            if not args.apt_pkg_pattern:
+                print("Error: --apt-pkg-pattern required for apt channel", file=sys.stderr)
+                return 1
+            all_versions = [v for v, _ in source.list_versions(args.apt_pkg_pattern)]
+        else:
+            print(f"Error: validate not supported for channel '{spec.channel}'", file=sys.stderr)
+            return 1
+    except RuntimeError as e:
+        print(f"Error fetching versions: {e}", file=sys.stderr)
+        return 1
+
+    # Optional regex filter (applied before from/to range)
+    if args.filter:
+        try:
+            fre = _re.compile(args.filter)
+            all_versions = [v for v in all_versions if fre.search(v)]
+        except _re.error as e:
+            print(f"Error: invalid --filter regex: {e}", file=sys.stderr)
+            return 1
+
+    # Parse & sort valid versions; skip unparseable
+    parsed = []
+    for v in all_versions:
+        try:
+            parsed.append((Version(v), v))
+        except InvalidVersion:
+            if args.verbose:
+                print(f"  Skipping unparseable version: {v}", file=sys.stderr)
+    parsed.sort(key=lambda t: t[0])
+
+    # from/to version range filter
+    if args.from_version:
+        try:
+            fv = Version(args.from_version)
+            parsed = [(pv, v) for pv, v in parsed if pv >= fv]
+        except InvalidVersion as e:
+            print(f"Error: invalid --from-version: {e}", file=sys.stderr)
+            return 1
+    if args.to_version:
+        try:
+            tv = Version(args.to_version)
+            parsed = [(pv, v) for pv, v in parsed if pv <= tv]
+        except InvalidVersion as e:
+            print(f"Error: invalid --to-version: {e}", file=sys.stderr)
+            return 1
+
+    if len(parsed) < 2:
+        print("Not enough versions to validate (need at least 2).", file=sys.stderr)
+        return 1
+
+    if args.verbose:
+        print(f"Validating {len(parsed)} versions, {len(parsed)-1} transition(s)", file=sys.stderr)
+
+    def classify(old_pv: Version, new_pv: Version) -> str:
+        """Classify transition as patch/minor/major based on version segments."""
+        if old_pv.major != new_pv.major:
+            return "major"
+        if old_pv.minor != new_pv.minor:
+            return "minor"
+        return "patch"
+
+    # ── Compare consecutive pairs ─────────────────────────────────────────────
+    VERDICT = {0: "NO_CHANGE", 4: "COMPATIBLE", 8: "INCOMPATIBLE", 12: "BREAKING"}
+    ICON    = {0: "✅", 4: "✅", 8: "⚠️ ", 12: "❌"}
+
+    rows = []      # (old_v, new_v, kind, result|None, compliant)
+    skipped = []   # transitions where baseline could not be generated
+    violations = []
+
+    with tempfile.TemporaryDirectory(prefix="abi_scanner_val_") as tmpdir:
+        tmp = Path(tmpdir)
+        analyzer = ABIAnalyzer(suppressions=suppressions)
+        api_filter = PublicAPIFilter()
+
+        # Cache baselines: version_str → Path|None
+        abi_cache: dict = {}
+
+        def get_abi(ver_str: str, idx: int) -> "Optional[Path]":
+            if ver_str in abi_cache:
+                return abi_cache[ver_str]
+            vspec = PackageSpec(
+                channel=spec.channel, package=spec.package, version=ver_str
+            )
+            lib = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name, args.verbose)
+            if not lib:
+                abi_cache[ver_str] = None
+                return None
+            abi_path = tmp / f"{idx}.abi"
+            if not _generate_baseline(lib, abi_path, args.verbose):
+                abi_cache[ver_str] = None
+                return None
+            abi_cache[ver_str] = abi_path
+            return abi_path
+
+        for i in range(len(parsed) - 1):
+            old_pv, old_v = parsed[i]
+            new_pv, new_v = parsed[i + 1]
+            kind = classify(old_pv, new_pv)
+
+            old_abi = get_abi(old_v, i * 2)
+            new_abi = get_abi(new_v, i * 2 + 1)
+
+            if old_abi is None or new_abi is None:
+                skipped.append({"from": old_v, "to": new_v, "kind": kind})
+                rows.append((old_v, new_v, kind, None, None))
+                continue
+
+            result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
+
+            # Compliance check
+            if args.strict:
+                allowed = RULES[kind]["strict_codes"] if kind == "patch" else RULES[kind]["allowed_codes"]
+            else:
+                allowed = RULES[kind]["allowed_codes"]
+
+            compliant = result.exit_code in allowed
+            rows.append((old_v, new_v, kind, result, compliant))
+
+            if not compliant:
+                violations.append({
+                    "from": old_v, "to": new_v, "kind": kind,
+                    "exit_code": result.exit_code,
+                    "verdict": VERDICT.get(result.exit_code, f"rc={result.exit_code}"),
+                    "functions_removed": result.functions_removed,
+                    "functions_added": result.functions_added,
+                })
+
+    # ── Output ────────────────────────────────────────────────────────────────
+    total = len([r for r in rows if r[3] is not None])
+    ok    = len([r for r in rows if r[4] is True])
+
+    if args.format == "json":
+        out = {
+            "spec": str(spec),
+            "total_transitions": total,
+            "compliant": ok,
+            "violations": len(violations),
+            "strict": args.strict,
+            "rows": [
+                {
+                    "from": old_v, "to": new_v, "kind": kind,
+                    "exit_code": r.exit_code if r else None,
+                    "verdict": VERDICT.get(r.exit_code, f"rc={r.exit_code}") if r else "SKIPPED",
+                    "compliant": c,
+                }
+                for old_v, new_v, kind, r, c in rows
+            ],
+            "violation_details": violations,
+            "skipped": skipped,
+        }
+        print(json.dumps(out, indent=2))
+    else:
+        mode = "strict" if args.strict else "lenient"
+        print(f"SemVer compliance report — {spec}  [{mode} mode]")
+        print(f"{'From':<22} {'To':<22} {'Type':<8} {'Status'}")
+        print("-" * 75)
+        for old_v, new_v, kind, result, compliant in rows:
+            if result is None:
+                line = "  SKIPPED"
+            else:
+                icon = ICON.get(result.exit_code, "?")
+                verdict = VERDICT.get(result.exit_code, f"rc={result.exit_code}")
+                flag = "" if compliant else "  ← VIOLATION"
+                stats = ""
+                if result.functions_removed or result.functions_added:
+                    stats = f"  (-{result.functions_removed} +{result.functions_added})"
+                line = f"  {icon} {kind:<8} {verdict}{stats}{flag}"
+            print(f"  {old_v:<22}{new_v:<22}{line}")
+        print()
+        pct = int(100 * ok / total) if total else 0
+        print(f"SemVer compliance: {pct}% ({ok}/{total} transitions)")
+        if violations:
+            print(f"Violations ({len(violations)}):")
+            for v in violations:
+                print(f"  ❌ {v['from']} → {v['to']}  [{v['kind'].upper()}]"
+                      f"  {v['verdict']}  (-{v['functions_removed']} +{v['functions_added']})")
+        else:
+            print("No violations found. ✅")
+
+    if skipped:
+        print(f"\nWarning: {len(skipped)} transition(s) skipped (library not found or abidw failed):")
+        for sk in skipped:
+            print(f"  ⚠️  {sk['from']} -> {sk['to']}  [{sk['kind'].upper()}]")
+        if args.fail_on != "none":
+            print("  Note: skipped transitions are NOT counted as violations.", file=sys.stderr)
+
+    if violations and args.fail_on != "none":
+        return min(len(violations), 125)  # shell exit codes capped at 125 to avoid wraparound
+    return 0
 
 
 def cmd_list(args):
@@ -533,10 +744,23 @@ Exit codes:
                         help="Return non-zero exit if incompatible version found")
     compat.add_argument("-v", "--verbose", action="store_true")
 
-    # validate (stub)
-    val = subparsers.add_parser("validate", help="Validate SemVer compliance")
-    val.add_argument("spec")
+    # validate
+    val = subparsers.add_parser("validate",
+        help="Validate SemVer compliance over a range of consecutive versions")
+    val.add_argument("spec", help="Package spec: channel:package (e.g. intel:oneccl-cpu)")
     val.add_argument("--format", choices=["text", "json"], default="text")
+    val.add_argument("--library-name", help="Target .so filename (e.g. libccl.so)")
+    val.add_argument("--suppressions", help="Path to abidiff suppressions file")
+    val.add_argument("--filter", help="Regex filter on version list (e.g. ^2021.14)")
+    val.add_argument("--from-version", help="Start of version range (inclusive)")
+    val.add_argument("--to-version",   help="End of version range (inclusive)")
+    val.add_argument("--apt-pkg-pattern",
+                     help="Regex for APT package names (required for apt channel)")
+    val.add_argument("--strict", action="store_true",
+                     help="Patch releases must be NO_CHANGE (exit 0); default allows COMPATIBLE (exit 4)")
+    val.add_argument("--fail-on", choices=["violations", "none"], default="none",
+                     help="Return non-zero exit code based on violation count (capped at 125)")
+    val.add_argument("-v", "--verbose", action="store_true")
 
     # list
     lst = subparsers.add_parser("list", help="List available versions for a package")
