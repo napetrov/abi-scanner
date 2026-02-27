@@ -19,7 +19,7 @@ from .analyzer import ABIAnalyzer, PublicAPIFilter, ABIVerdict, ABIComparisonRes
 
 
 def _find_libraries(search_dir: Path, library_name: Optional[str],
-                    package: str, verbose: bool = False) -> dict[str, Path]:
+                    verbose: bool = False) -> dict[str, Path]:
     """Find shared libraries (.so) inside an extracted package directory.
     Returns a dict mapping base library names (e.g. 'libmkl_rt.so') to the actual file path.
     """
@@ -133,10 +133,10 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
             local_extract_dir = work_dir / "extract"
             local_extract_dir.mkdir(parents=True, exist_ok=True)
             extracted = source.extract(local_path, local_extract_dir)
-            return _find_libraries(extracted, library_name, spec.package, verbose)
+            return _find_libraries(extracted, library_name, verbose)
         
         if local_path.is_dir():
-            return _find_libraries(local_path, library_name, spec.package, verbose)
+            return _find_libraries(local_path, library_name, verbose)
         elif local_path.is_file():
             base = local_path.name
             idx = base.find(".so")
@@ -161,8 +161,8 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             print(f"  Conda create failed: {r.stderr[-300:]}", file=sys.stderr)
-            return None
-        libs = _find_libraries(env_path, library_name, spec.package, verbose)
+            return {}
+        libs = _find_libraries(env_path, library_name, verbose)
         if not libs:
             print(f"  Libraries not found in env for {spec}", file=sys.stderr)
         return libs
@@ -174,14 +174,14 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
                                           index_url=apt_index_url)
         except ValueError as e:
             print(f"  APT: {e}", file=sys.stderr)
-            return None
+            return {}
         if verbose:
             print(f"  Downloading {full_url} ...", file=sys.stderr)
         try:
             pkg_file = source.download(full_url, spec.version, download_dir)
         except Exception as e:
             print(f"  APT download failed: {e}", file=sys.stderr)
-            return None
+            return {}
     else:
         try:
             if verbose:
@@ -189,15 +189,15 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
             pkg_file = source.download(spec.package, spec.version, download_dir)
         except Exception as e:
             print(f"  Download failed: {e}", file=sys.stderr)
-            return None
+            return {}
 
     try:
         extracted = source.extract(pkg_file, extract_dir)
     except Exception as e:
         print(f"  Extraction failed: {e}", file=sys.stderr)
-        return None
+        return {}
 
-    libs = _find_libraries(extracted, library_name, spec.package, verbose)
+    libs = _find_libraries(extracted, library_name, verbose)
     if not libs:
         print(f"  Libraries not found in {spec} (tried library_name={library_name!r}, package={spec.package!r})",
               file=sys.stderr)
