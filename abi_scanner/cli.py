@@ -70,7 +70,7 @@ def _generate_baseline(lib_path: Path, output_path: Path,
     return True, ""
 
 
-def _parse_spec_parts(spec) -> tuple:
+def _parse_spec_parts(spec) -> tuple[str, str]:
     """Return (channel, package) from a PackageSpec or spec string."""
     spec_str = str(spec)
     if ":" in spec_str:
@@ -812,7 +812,8 @@ def cmd_validate(args):
                 })
 
     # ── Output ────────────────────────────────────────────────────────────────
-    import datetime as _dt, re as _re2
+    import datetime as _dt
+    import re as _re2
     total = len([r for r in rows if r[3] is not None])
     ok    = len([r for r in rows if r[4] is True])
     _generated_at = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")

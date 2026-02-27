@@ -2,7 +2,6 @@
 # abi_tracker/scripts/parse_headers.py
 # Parse C++ headers to extract public API namespaces and classes
 
-import os
 import sys
 import re
 import json

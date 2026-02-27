@@ -1,6 +1,5 @@
 """Tests for ABI analyzer module."""
 
-from pathlib import Path
 
 from abi_scanner.analyzer import ABIAnalyzer, ABIVerdict, PublicAPIFilter, ABIComparisonResult
 
