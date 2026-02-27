@@ -819,7 +819,7 @@ def cmd_validate(args):
 
         _apt_version_to_pkg = locals().get("_apt_version_to_pkg", {})
 
-        def get_abi(ver_str: str, idx: int) -> "Optional[dict[str, Path]]":
+        def get_abi(ver_str: str, idx: int) -> "Optional[dict[str, dict]]":
             pkg_name = _apt_version_to_pkg.get(ver_str, spec.package)
             key = (pkg_name, ver_str)
             if key in abi_cache:
@@ -838,10 +838,10 @@ def cmd_validate(args):
             for base, lib_path in libs.items():
                 abi_path = tmp / f"{idx}_{base}.abi"
                 _ok_abi, _abidw_reason = _generate_baseline(lib_path, abi_path, args.verbose)
-                if not _ok_abi:
-                    result_dict[base] = lib_path # Store fallback path
-                else:
-                    result_dict[base] = abi_path
+                result_dict[base] = {
+                    "so": lib_path,
+                    "abi": abi_path if _ok_abi else None
+                }
                     
             abi_cache[key] = result_dict
             return result_dict
@@ -876,7 +876,7 @@ def cmd_validate(args):
                     r = ABIComparisonResult(
                         verdict=ABIVerdict.BREAKING,
                         exit_code=12,
-                        baseline_old=str(old_abi[base]),
+                        baseline_old=str(old_abi[base]["so"]),
                         baseline_new="",
                         functions_removed=1
                     )
@@ -885,17 +885,17 @@ def cmd_validate(args):
                         verdict=ABIVerdict.COMPATIBLE,
                         exit_code=4,
                         baseline_old="",
-                        baseline_new=str(new_abi[base]),
+                        baseline_new=str(new_abi[base]["so"]),
                         functions_added=1
                     )
-                elif _is_so_file(old_abi[base]) or _is_so_file(new_abi[base]):
-                    r = _symbols_only_compare(old_abi[base], new_abi[base])
+                elif old_abi[base]["abi"] and new_abi[base]["abi"]:
+                    r = analyzer.compare(old_abi[base]["abi"], new_abi[base]["abi"], api_filter, api_filter)
+                else:
+                    r = _symbols_only_compare(old_abi[base]["so"], new_abi[base]["so"])
                     if r is None:
                         continue
                     if args.verbose:
                         print(f"  ⚠ nm-D fallback for {base}: {old_v}→{new_v}", file=sys.stderr)
-                else:
-                    r = analyzer.compare(old_abi[base], new_abi[base], api_filter, api_filter)
 
                 lib_results[base] = r
                 if r.exit_code > worst_exit:
