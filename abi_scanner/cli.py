@@ -18,31 +18,58 @@ from .analyzer import ABIAnalyzer, PublicAPIFilter, ABIVerdict, ABIComparisonRes
 
 
 
-def _find_library(search_dir: Path, library_name: Optional[str],
-                  package: str, verbose: bool = False) -> Optional[Path]:
-    """Find a shared library (.so) inside an extracted package directory."""
-    patterns = []
+def _find_libraries(search_dir: Path, library_name: Optional[str],
+                    verbose: bool = False) -> dict[str, Path]:
+    """Find shared libraries (.so) inside an extracted package directory.
+    Returns a dict mapping base library names (e.g. 'libmkl_rt.so') to the actual file path.
+    """
+    import collections
+    
+    found_libs = collections.defaultdict(list)
+    
+    # If a specific library_name is requested, we only look for that one (or its pattern)
     if library_name:
         base = library_name.replace(".so", "").lstrip("lib")
         patterns = [library_name + "*", f"lib{base}.so*"]
+        cands = []
+        for pat in patterns:
+            cands.extend(search_dir.rglob(pat))
     else:
-        patterns = [f"lib{package}.so*", f"lib{package.replace('-', '_')}.so*"]
-
-    for pat in patterns:
-        cands = [
-            p for p in search_dir.rglob(pat)
-            if p.is_file()
-            and not p.name.endswith(".py")
-            and "debug" not in str(p)
-            and "preview" not in p.name
-        ]
-        if cands:
-            # prefer most-versioned name (longest)
-            chosen = sorted(cands, key=lambda p: len(p.name))[-1]
-            if verbose:
-                print(f"  Found: {chosen}", file=sys.stderr)
-            return chosen
-    return None
+        # Look for all .so files
+        cands = list(search_dir.rglob("*.so*"))
+        
+    for p in cands:
+        if not p.is_file():
+            continue
+        if p.name.endswith(".py") or p.name.endswith(".a") or p.name.endswith(".la"):
+            continue
+        if "debug" in str(p).lower():
+            continue
+        if "preview" in p.name.lower():
+            continue
+        
+        # Determine the base name (e.g. libmkl_rt.so.2 -> libmkl_rt.so)
+        name = p.name
+        idx = name.find(".so")
+        if idx == -1:
+            continue
+        base_name = name[:idx+3]
+        
+        # If specific library was requested, enforce match
+        if library_name and base_name != library_name:
+            continue
+            
+        found_libs[base_name].append(p)
+        
+    result = {}
+    for base_name, paths in found_libs.items():
+        # prefer most-versioned name (longest) or longest path if tied
+        chosen = sorted(paths, key=lambda p: (len(p.name), len(str(p))))[-1]
+        result[base_name] = chosen
+        if verbose:
+            print(f"  Found {base_name}: {chosen}", file=sys.stderr)
+            
+    return result
 
 
 def _generate_baseline(lib_path: Path, output_path: Path,
@@ -91,20 +118,10 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
                            library_name: Optional[str],
                            verbose: bool = False,
                            apt_index_url: Optional[str] = None,
-                           with_dev_package: bool = False) -> Optional[Path]:
-    """Download, extract, and find the target library for a package spec.
+                           with_dev_package: bool = False) -> dict[str, Path]:
+    """Download, extract, and find target libraries for a package spec.
 
-    Returns path to the .so file, or None on failure.
-
-    Args:
-        spec: Package specification (channel:package=version)
-        work_dir: Working directory for downloads/extracts
-        library_name: Target .so filename (optional)
-        verbose: Print progress messages
-        apt_index_url: Custom APT Packages.gz URL
-        with_dev_package: If True (APT only), also download the -dev package
-            and pass its include dir to abidw via --hd1 for accurate
-            public/private symbol separation.
+    Returns dict mapping base names to .so file paths. Returns empty dict on failure.
     """
     source = create_source(spec)
 
@@ -116,8 +133,17 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
             local_extract_dir = work_dir / "extract"
             local_extract_dir.mkdir(parents=True, exist_ok=True)
             extracted = source.extract(local_path, local_extract_dir)
-            return _find_library(extracted, library_name, spec.package, verbose)
-        return local_path  # .so file or pre-extracted directory
+            return _find_libraries(extracted, library_name, verbose)
+        
+        if local_path.is_dir():
+            return _find_libraries(local_path, library_name, verbose)
+        elif local_path.is_file():
+            base = local_path.name
+            idx = base.find(".so")
+            if idx != -1:
+                base = base[:idx+3]
+            return {base: local_path}
+        return {}
 
     download_dir = work_dir / "download"
     extract_dir = work_dir / "extract"
@@ -135,11 +161,11 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             print(f"  Conda create failed: {r.stderr[-300:]}", file=sys.stderr)
-            return None
-        lib = _find_library(env_path, library_name, spec.package, verbose)
-        if not lib:
-            print(f"  Library not found in env for {spec}", file=sys.stderr)
-        return lib
+            return {}
+        libs = _find_libraries(env_path, library_name, verbose)
+        if not libs:
+            print(f"  Libraries not found in env for {spec}", file=sys.stderr)
+        return libs
 
     # APT: resolve .deb URL via AptSource.resolve_url(), then download
     if spec.channel == "apt":
@@ -148,14 +174,14 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
                                           index_url=apt_index_url)
         except ValueError as e:
             print(f"  APT: {e}", file=sys.stderr)
-            return None
+            return {}
         if verbose:
             print(f"  Downloading {full_url} ...", file=sys.stderr)
         try:
             pkg_file = source.download(full_url, spec.version, download_dir)
         except Exception as e:
             print(f"  APT download failed: {e}", file=sys.stderr)
-            return None
+            return {}
     else:
         try:
             if verbose:
@@ -163,47 +189,19 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
             pkg_file = source.download(spec.package, spec.version, download_dir)
         except Exception as e:
             print(f"  Download failed: {e}", file=sys.stderr)
-            return None
+            return {}
 
     try:
         extracted = source.extract(pkg_file, extract_dir)
     except Exception as e:
         print(f"  Extraction failed: {e}", file=sys.stderr)
-        return None
+        return {}
 
-    lib = _find_library(extracted, library_name, spec.package, verbose)
-    if not lib:
-        print(f"  Library not found in {spec} (tried library_name={library_name!r}, package={spec.package!r})",
+    libs = _find_libraries(extracted, library_name, verbose)
+    if not libs:
+        print(f"  Libraries not found in {spec} (tried library_name={library_name!r}, package={spec.package!r})",
               file=sys.stderr)
-        return None
-
-    # --with-dev-package: download -dev APT package and record headers dir
-    # so callers can pass it to abidw --hd1 for accurate public/private split.
-    if with_dev_package and spec.channel == "apt":
-        dev_pkg_name = spec.package + "-dev"
-        dev_extract_dir = work_dir / "dev_extract"
-        dev_extract_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            dev_url = source.resolve_url(dev_pkg_name, spec.version,
-                                         index_url=apt_index_url)
-            if verbose:
-                print(f"  Downloading dev package {dev_url} ...", file=sys.stderr)
-            dev_pkg_file = source.download(dev_url, spec.version,
-                                           work_dir / "dev_download")
-            dev_extracted = source.extract(dev_pkg_file, dev_extract_dir)
-            # Attach headers_dir as attribute so caller can pass to analyzer
-            headers_dirs = [d for d in dev_extracted.rglob("include") if d.is_dir()]
-            lib._headers_dir = headers_dirs[0] if headers_dirs else dev_extracted
-            if verbose:
-                hd = getattr(lib, "_headers_dir", None)
-                print(f"  Headers dir: {hd}", file=sys.stderr)
-        except (ValueError, Exception) as e:
-            if verbose:
-                print(f"  Warning: could not download dev package {dev_pkg_name}: {e}",
-                      file=sys.stderr)
-            # Non-fatal: proceed without headers
-
-    return lib
+    return libs
 
 
 def _is_so_file(p: Path) -> bool:
@@ -569,7 +567,7 @@ def _render_markdown_report(
     ok    = len([r for r in rows if r[4] is True])
     pct   = int(100 * ok / total) if total else 0
     mode  = "strict" if strict else "lenient"
-    lib_label = library_name or "(auto-detect)"
+    lib_label = library_name or "all (multi-library scan)"
 
     out = io.StringIO()
 
@@ -637,6 +635,19 @@ def _render_markdown_report(
             w()
             w(f"**Removed:** {v['functions_removed']} &nbsp; **Added:** {v['functions_added']}")
             w()
+
+            # Per-library breakdown (multi-lib mode)
+            lib_results = v.get("_lib_results", {})
+            if lib_results:
+                w("**Libraries affected:**")
+                w()
+                w("| Library | Verdict | Removed | Added |")
+                w("|---------|---------|--------:|------:|")
+                for lib_name, lr in sorted(lib_results.items()):
+                    lib_icon = "✅" if lr.exit_code < 8 else "❌"
+                    lib_verdict = VERDICT.get(lr.exit_code, f"rc={lr.exit_code}")
+                    w(f"| `{lib_name}` | {lib_icon} {lib_verdict} | {lr.functions_removed or '—'} | {lr.functions_added or '—'} |")
+                w()
 
             for _section, syms_raw, label in [
                 ("removed", result.public_removed if result else [], "📉 Removed symbols"),
@@ -808,7 +819,7 @@ def cmd_validate(args):
 
         _apt_version_to_pkg = locals().get("_apt_version_to_pkg", {})
 
-        def get_abi(ver_str: str, idx: int) -> "Optional[Path]":
+        def get_abi(ver_str: str, idx: int) -> "Optional[dict[str, dict]]":
             pkg_name = _apt_version_to_pkg.get(ver_str, spec.package)
             key = (pkg_name, ver_str)
             if key in abi_cache:
@@ -816,21 +827,24 @@ def cmd_validate(args):
             vspec = PackageSpec(
                 channel=spec.channel, package=pkg_name, version=ver_str
             )
-            lib = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name,
-                                        args.verbose, apt_index_url=_apt_index_url)
-            if not lib:
+            libs = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name,
+                                         args.verbose, apt_index_url=_apt_index_url)
+            if not libs:
                 abi_cache[key] = None
-                abi_reason_cache[key] = "library not found or download failed"
+                abi_reason_cache[key] = "libraries not found or download failed"
                 return None
-            abi_path = tmp / f"{idx}.abi"
-            _ok_abi, _abidw_reason = _generate_baseline(lib, abi_path, args.verbose)
-            if not _ok_abi:
-                # nm-D fallback: store .so path so compare loop can use nm -D
-                abi_cache[key] = lib
-                abi_reason_cache[key] = _abidw_reason
-                return lib
-            abi_cache[key] = abi_path
-            return abi_path
+            
+            result_dict = {}
+            for base, lib_path in libs.items():
+                abi_path = tmp / f"{idx}_{base}.abi"
+                _ok_abi, _abidw_reason = _generate_baseline(lib_path, abi_path, args.verbose)
+                result_dict[base] = {
+                    "so": lib_path,
+                    "abi": abi_path if _ok_abi else None
+                }
+                    
+            abi_cache[key] = result_dict
+            return result_dict
 
         for i in range(len(parsed) - 1):
             old_pv, old_v = parsed[i]
@@ -851,20 +865,53 @@ def cmd_validate(args):
                 rows.append((old_v, new_v, kind, None, None))
                 continue
 
-            # nm-D fallback when get_abi returned .so (abidw crashed)
-            if _is_so_file(old_abi) or _is_so_file(new_abi):
-                result = _symbols_only_compare(old_abi, new_abi)
-                if result is None:
-                    skipped.append({"from": old_v, "to": new_v, "kind": kind,
-                                    "reason": "nm-D fallback also failed"})
-                    rows.append((old_v, new_v, kind, None, None))
-                    continue
-                if args.verbose:
-                    print(f"  ⚠ nm-D fallback: {old_v}→{new_v}", file=sys.stderr)
-            else:
-                result = analyzer.compare(old_abi, new_abi, api_filter, api_filter)
+            # old_abi and new_abi are now dicts: base_name -> abi_path|so_path
+            all_bases = set(old_abi.keys()) | set(new_abi.keys())
+            lib_results: dict[str, "ABIComparisonResult"] = {}
+            worst_exit = 0
+            worst_result = None
 
-            # Compliance check
+            for base in sorted(all_bases):
+                if base not in new_abi:
+                    r = ABIComparisonResult(
+                        verdict=ABIVerdict.BREAKING,
+                        exit_code=12,
+                        baseline_old=str(old_abi[base]["so"]),
+                        baseline_new="",
+                        functions_removed=1
+                    )
+                elif base not in old_abi:
+                    r = ABIComparisonResult(
+                        verdict=ABIVerdict.COMPATIBLE,
+                        exit_code=4,
+                        baseline_old="",
+                        baseline_new=str(new_abi[base]["so"]),
+                        functions_added=1
+                    )
+                elif old_abi[base]["abi"] and new_abi[base]["abi"]:
+                    r = analyzer.compare(old_abi[base]["abi"], new_abi[base]["abi"], api_filter, api_filter)
+                else:
+                    r = _symbols_only_compare(old_abi[base]["so"], new_abi[base]["so"])
+                    if r is None:
+                        continue
+                    if args.verbose:
+                        print(f"  ⚠ nm-D fallback for {base}: {old_v}→{new_v}", file=sys.stderr)
+
+                lib_results[base] = r
+                if r.exit_code > worst_exit:
+                    worst_exit = r.exit_code
+                    worst_result = r
+
+            if worst_result is None:
+                skipped.append({"from": old_v, "to": new_v, "kind": kind,
+                                "reason": "No libraries compared successfully"})
+                rows.append((old_v, new_v, kind, None, None))
+                continue
+
+            # Attach per-lib breakdown to worst_result for use in reports
+            worst_result._lib_results = lib_results
+
+            # Compliance check using worst exit_code across all libs
             if args.strict:
                 allowed = RULES[kind]["strict_codes"] if kind == "patch" else RULES[kind]["allowed_codes"]
             else:
