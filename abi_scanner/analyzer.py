@@ -111,6 +111,8 @@ class ABIComparisonResult:
     exit_code: int
     baseline_old: str
     baseline_new: str
+    binary_name_old: str = ""
+    binary_name_new: str = ""
     
     # Summary counters
     functions_removed: int = 0
