@@ -386,7 +386,8 @@ def cmd_compatible(args):
         tmp = Path(tmpdir)
 
         # Prepare base version once
-        base_lib = _download_and_prepare(base_spec, tmp / "base", library_name, args.verbose)
+        base_lib = _download_and_prepare(base_spec, tmp / "base", library_name,
+                                         args.verbose, apt_index_url=_apt_index_url)
         if not base_lib:
             print(f"Error: could not obtain library for {base_spec}", file=sys.stderr)
             return 1
@@ -406,7 +407,8 @@ def cmd_compatible(args):
                 version=ver,
             )
             new_lib = _download_and_prepare(
-                new_spec, tmp / f"v{idx}", library_name, args.verbose
+                new_spec, tmp / f"v{idx}", library_name, args.verbose,
+                apt_index_url=_apt_index_url
             )
             if not new_lib:
                 if args.verbose:
