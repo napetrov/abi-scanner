@@ -46,19 +46,28 @@ def _find_library(search_dir: Path, library_name: Optional[str],
 
 
 def _generate_baseline(lib_path: Path, output_path: Path,
-                        verbose: bool = False) -> "tuple[bool, str]":
+                        verbose: bool = False,
+                        headers_dir: Optional[Path] = None) -> "tuple[bool, str]":
     """Run abidw on a library and save the .abi baseline.
 
     Returns (success, failure_reason). failure_reason is empty on success.
     Captures abidw stderr to diagnose crashes (e.g. libabigail DWARF assertion).
+
+    Args:
+        headers_dir: Optional path to -dev package include dir; passed via
+            --hd1 to abidw for accurate public/private symbol separation.
     """
     abidw = shutil.which("abidw")
     if not abidw:
         return False, "abidw not found in PATH"
 
-    cmd = [abidw, "--out-file", str(output_path), str(lib_path)]
+    cmd = [abidw, "--out-file", str(output_path)]
+    if headers_dir and headers_dir.is_dir():
+        cmd.extend(["--hd1", str(headers_dir)])
+    cmd.append(str(lib_path))
     if verbose:
-        print(f"  abidw: {lib_path.name}", file=sys.stderr)
+        print(f"  abidw: {lib_path.name}" + (f" (headers: {headers_dir})" if headers_dir else ""),
+              file=sys.stderr)
 
     r = subprocess.run(cmd, capture_output=True, text=True)
     # abidw may exit 0 but crash via assertion (libabigail DWARF bug) — check output file too
@@ -81,10 +90,21 @@ def _parse_spec_parts(spec) -> tuple[str, str]:
 def _download_and_prepare(spec: PackageSpec, work_dir: Path,
                            library_name: Optional[str],
                            verbose: bool = False,
-                           apt_index_url: Optional[str] = None) -> Optional[Path]:
+                           apt_index_url: Optional[str] = None,
+                           with_dev_package: bool = False) -> Optional[Path]:
     """Download, extract, and find the target library for a package spec.
 
     Returns path to the .so file, or None on failure.
+
+    Args:
+        spec: Package specification (channel:package=version)
+        work_dir: Working directory for downloads/extracts
+        library_name: Target .so filename (optional)
+        verbose: Print progress messages
+        apt_index_url: Custom APT Packages.gz URL
+        with_dev_package: If True (APT only), also download the -dev package
+            and pass its include dir to abidw via --hd1 for accurate
+            public/private symbol separation.
     """
     source = create_source(spec)
 
@@ -155,6 +175,34 @@ def _download_and_prepare(spec: PackageSpec, work_dir: Path,
     if not lib:
         print(f"  Library not found in {spec} (tried library_name={library_name!r}, package={spec.package!r})",
               file=sys.stderr)
+        return None
+
+    # --with-dev-package: download -dev APT package and record headers dir
+    # so callers can pass it to abidw --hd1 for accurate public/private split.
+    if with_dev_package and spec.channel == "apt":
+        dev_pkg_name = spec.package + "-dev"
+        dev_extract_dir = work_dir / "dev_extract"
+        dev_extract_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            dev_url = source.resolve_url(dev_pkg_name, spec.version,
+                                         index_url=apt_index_url)
+            if verbose:
+                print(f"  Downloading dev package {dev_url} ...", file=sys.stderr)
+            dev_pkg_file = source.download(dev_url, spec.version,
+                                           work_dir / "dev_download")
+            dev_extracted = source.extract(dev_pkg_file, dev_extract_dir)
+            # Attach headers_dir as attribute so caller can pass to analyzer
+            headers_dirs = [d for d in dev_extracted.rglob("include") if d.is_dir()]
+            lib._headers_dir = headers_dirs[0] if headers_dirs else dev_extracted
+            if verbose:
+                hd = getattr(lib, "_headers_dir", None)
+                print(f"  Headers dir: {hd}", file=sys.stderr)
+        except (ValueError, Exception) as e:
+            if verbose:
+                print(f"  Warning: could not download dev package {dev_pkg_name}: {e}",
+                      file=sys.stderr)
+            # Non-fatal: proceed without headers
+
     return lib
 
 
@@ -224,20 +272,24 @@ def cmd_compare(args):
         library_name: Optional[str] = getattr(args, "library_name", None)
         suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
         _apt_index_url: Optional[str] = getattr(args, "apt_index_url", None)
+        _with_dev = getattr(args, "with_dev_package", False)
+        _track_exp = getattr(args, "track_experimental", False)
 
         with tempfile.TemporaryDirectory(prefix="abi_scanner_") as tmpdir:
             tmp = Path(tmpdir)
 
             # Prepare old version
             old_lib = _download_and_prepare(old_spec, tmp / "old", library_name,
-                                            args.verbose, apt_index_url=_apt_index_url)
+                                            args.verbose, apt_index_url=_apt_index_url,
+                                            with_dev_package=_with_dev)
             if not old_lib:
                 print(f"Error: could not obtain library for {old_spec}", file=sys.stderr)
                 return 1
 
             # Prepare new version
             new_lib = _download_and_prepare(new_spec, tmp / "new", library_name,
-                                            args.verbose, apt_index_url=_apt_index_url)
+                                            args.verbose, apt_index_url=_apt_index_url,
+                                            with_dev_package=_with_dev)
             if not new_lib:
                 print(f"Error: could not obtain library for {new_spec}", file=sys.stderr)
                 return 1
@@ -246,13 +298,19 @@ def cmd_compare(args):
             old_abi = tmp / "old.abi"
             new_abi = tmp / "new.abi"
 
-            _ok_old, _reason_old = _generate_baseline(old_lib, old_abi, args.verbose)
+            old_headers = getattr(old_lib, "_headers_dir", None)
+            new_headers = getattr(new_lib, "_headers_dir", None)
+            _ok_old, _reason_old = _generate_baseline(old_lib, old_abi, args.verbose,
+                                                       headers_dir=old_headers)
             old_baseline = old_abi if _ok_old else old_lib
-            _ok_new, _reason_new = _generate_baseline(new_lib, new_abi, args.verbose)
+            _ok_new, _reason_new = _generate_baseline(new_lib, new_abi, args.verbose,
+                                                       headers_dir=new_headers)
             new_baseline = new_abi if _ok_new else new_lib
 
             # Compare (nm-D fallback when abidw fails for either side)
-            analyzer = ABIAnalyzer(suppressions=suppressions)
+            analyzer = ABIAnalyzer(suppressions=suppressions,
+                             suppress_stdlib=getattr(args, "suppress_stdlib", False),
+                             track_experimental=_track_exp)
             api_filter = PublicAPIFilter()
             if _is_so_file(old_baseline) or _is_so_file(new_baseline):
                 if args.verbose:
@@ -269,9 +327,13 @@ def cmd_compare(args):
         if args.format == "json":
             output = json.dumps(result.to_dict(), indent=2)
         else:
-            verdict_map = {0: "✅ NO_CHANGE", 4: "✅ COMPATIBLE",
-                           8: "⚠️  INCOMPATIBLE", 12: "❌ BREAKING"}
-            verdict = verdict_map.get(result.exit_code, f"rc={result.exit_code}")
+            verdict_map = {
+                0: "✅ NO_CHANGE",
+                4: "✅ COMPATIBLE",
+                8: "⚠️  INCOMPATIBLE",
+                12: "❌ BREAKING"
+            }
+            verdict = verdict_map.get(result.verdict.value, f"rc={result.exit_code}")
             lines = [
                 f"Comparing {old_spec} → {new_spec}",
                 f"Status: {verdict}",
@@ -295,10 +357,10 @@ def cmd_compare(args):
             print(output)
 
         # Exit code
-        if args.fail_on == "breaking" and (result.exit_code & 8):
-            return result.exit_code
-        if args.fail_on == "any" and result.exit_code > 0:
-            return result.exit_code
+        if args.fail_on == "breaking" and result.verdict.value >= 8: # ABIVerdict.INCOMPATIBLE
+            return result.exit_code if result.exit_code > 0 else 8
+        if args.fail_on == "any" and result.verdict.value > 0: # ABIVerdict.NO_CHANGE
+            return result.exit_code if result.exit_code > 0 else 4
         return 0
 
     except ValueError as e:
@@ -325,6 +387,8 @@ def cmd_compatible(args):
     library_name: Optional[str] = getattr(args, "library_name", None)
     suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
     _apt_index_url: Optional[str] = getattr(args, "apt_index_url", None)
+    _with_dev = getattr(args, "with_dev_package", False)
+    _track_exp = getattr(args, "track_experimental", False)
 
     # --- Gather candidate versions ----------------------------------------
     try:
@@ -397,7 +461,8 @@ def cmd_compatible(args):
             print(f"Error: {_reason}", file=sys.stderr)
             return 1
 
-        analyzer = ABIAnalyzer(suppressions=suppressions)
+        analyzer = ABIAnalyzer(suppressions=suppressions,
+                             suppress_stdlib=getattr(args, "suppress_stdlib", False))
         api_filter = PublicAPIFilter()
 
         for idx, ver in enumerate(candidates):
@@ -435,8 +500,8 @@ def cmd_compatible(args):
     # --- Format output -------------------------------------------------------
     VERDICT = {0: "✅ NO_CHANGE", 4: "✅ COMPATIBLE", 8: "⚠️  INCOMPATIBLE", 12: "❌ BREAKING"}
 
-    compatible = [v for v, r in results if r is not None and not (r.exit_code & 8)]
-    breaking_at = next((v for v, r in results if r is not None and (r.exit_code & 8)), None)
+    compatible = [v for v, r in results if r is not None and r.verdict.value < 8]
+    breaking_at = next((v for v, r in results if r is not None and r.verdict.value >= 8), None)
 
     if args.format == "json":
         out = {
@@ -495,6 +560,7 @@ def _render_markdown_report(
     generated_at: str,
     VERDICT: dict,
     ICON: dict,
+    source_url: "Optional[str]" = None,
 ) -> str:
     """Render a stable Markdown ABI compliance report."""
     import io
@@ -517,6 +583,8 @@ def _render_markdown_report(
     w()
     w(f"**Channel:** `{_channel}`  ")
     w(f"**Package:** `{_pkg}`  ")
+    if source_url:
+        w(f"**Source:** [{source_url}]({source_url})  ")
     w(f"**Library:** `{lib_label}`  ")
     w(f"**Mode:** {mode}  ")
     w(f"**Generated:** {generated_at}  ")
@@ -547,8 +615,8 @@ def _render_markdown_report(
         if result is None:
             w(f"| `{old_v}` | `{new_v}` | {kind} | ⚠️ SKIPPED | — | — | — |")
         else:
-            icon  = ICON.get(result.exit_code, "?")
-            verd  = VERDICT.get(result.exit_code, f"rc={result.exit_code}")
+            icon  = ICON.get(result.verdict.value, "?")
+            verd  = result.verdict.name
             flag  = "" if compliant else " ←"
             tool  = "nm-D" if "[nm-D fallback" in (result.stdout or "") else "abidiff"
             rem   = str(result.functions_removed) if result.functions_removed else "—"
@@ -594,12 +662,15 @@ def _render_markdown_report(
                         continue
                     w(f"**{tier.capitalize()} ({len(tier_syms)}):**")
                     w()
-                    w("| Symbol |")
-                    w("|--------|")
+                    # Collect corresponding raw names for stdlib-leak detection
+                    raw_lookup = {demangle_symbol(s): s for s in syms_raw}
+                    w("| Symbol | Tags |")
+                    w("|--------|------|")
                     limit = details_limit if details_limit > 0 else len(tier_syms)
                     for sym in tier_syms[:limit]:
-                        # escape pipes in symbol names
-                        w(f"| `{sym.replace('|', '&#124;')}` |")
+                        raw = raw_lookup.get(sym, sym)
+                        tag = " ⚠️ `[ABI leak]`" if raw.startswith(ABIAnalyzer.STDLIB_PREFIXES) else ""
+                        w(f"| `{sym.replace('|', '&#124;')}` |{tag} |")
                     if len(tier_syms) > limit:
                         w(f"| _... {len(tier_syms) - limit} more_ |")
                     w()
@@ -726,7 +797,8 @@ def cmd_validate(args):
 
     with tempfile.TemporaryDirectory(prefix="abi_scanner_val_") as tmpdir:
         tmp = Path(tmpdir)
-        analyzer = ABIAnalyzer(suppressions=suppressions)
+        analyzer = ABIAnalyzer(suppressions=suppressions,
+                             suppress_stdlib=getattr(args, "suppress_stdlib", False))
         api_filter = PublicAPIFilter()
 
         # Cache baselines: (pkg_name, ver_str) → Path|None  (avoids aliasing when
@@ -798,14 +870,15 @@ def cmd_validate(args):
             else:
                 allowed = RULES[kind]["allowed_codes"]
 
-            compliant = result.exit_code in allowed
+            # Use the (potentially downgraded) verdict for compliance, not raw exit code
+            compliant = result.verdict.value in allowed
             rows.append((old_v, new_v, kind, result, compliant))
 
             if not compliant:
                 violations.append({
                     "from": old_v, "to": new_v, "kind": kind,
                     "exit_code": result.exit_code,
-                    "verdict": VERDICT.get(result.exit_code, f"rc={result.exit_code}"),
+                    "verdict": result.verdict.name,
                     "functions_removed": result.functions_removed,
                     "functions_added": result.functions_added,
                     "_result": result,  # keep for --details output
@@ -824,6 +897,7 @@ def cmd_validate(args):
         "spec": str(spec),
         "channel": _json_channel,
         "package": _json_pkg,
+        "source_url": _apt_index_url,
         "library": library_name or "(auto-detect)",
         "generated_at": _generated_at,
         "total_transitions": total,
@@ -887,6 +961,7 @@ def cmd_validate(args):
             generated_at=_generated_at,
             VERDICT=VERDICT,
             ICON=ICON,
+            source_url=_apt_index_url,
         ), encoding="utf-8")
         print("Reports saved:", file=sys.stderr)
         print(f"  Markdown: {md_path}", file=sys.stderr)
@@ -917,6 +992,7 @@ def cmd_validate(args):
             generated_at=_generated_at,
             VERDICT=VERDICT,
             ICON=ICON,
+                    source_url=_apt_index_url,
         )
         if getattr(args, "output", None):
             with open(args.output, "w", encoding="utf-8") as _fh:
@@ -944,8 +1020,8 @@ def cmd_validate(args):
                 reason = _skip_reasons.get((old_v, new_v), "unknown")
                 line = f"  ⚠️  SKIPPED ({reason})"
             else:
-                icon    = ICON.get(result.exit_code, "?")
-                verdict = VERDICT.get(result.exit_code, f"rc={result.exit_code}")
+                icon    = ICON.get(result.verdict.value, "?")
+                verdict = result.verdict.name
                 flag    = "" if compliant else "  ← VIOLATION"
                 stats   = f"  (-{result.functions_removed} +{result.functions_added})" \
                           if (result.functions_removed or result.functions_added) else ""
@@ -1113,6 +1189,8 @@ Exit codes:
     cp.add_argument("--fail-on", choices=["breaking", "any", "none"], default="none")
     cp.add_argument("--library-name", help="Target .so filename (e.g. libsycl.so)")
     cp.add_argument("--suppressions", help="Path to abidiff suppressions file")
+    cp.add_argument("--suppress-stdlib", action="store_true",
+                     help="Filter out C++ stdlib/LLVM/fmt/spdlog internal symbols (leaked template instantiations). Reduces noise in compiler/loader libraries.")
     cp.add_argument("--apt-index-url", metavar="URL",
                     help="Custom APT Packages.gz URL for apt channel packages.")
     cp.add_argument("-v", "--verbose", action="store_true")
@@ -1124,6 +1202,8 @@ Exit codes:
     compat.add_argument("--format", choices=["text", "json"], default="text")
     compat.add_argument("--library-name", help="Target .so filename (e.g. libsycl.so)")
     compat.add_argument("--suppressions", help="Path to abidiff suppressions file")
+    compat.add_argument("--suppress-stdlib", action="store_true",
+                     help="Filter out C++ stdlib/LLVM/fmt/spdlog internal symbols (leaked template instantiations). Reduces noise in compiler/loader libraries.")
     compat.add_argument("--filter", help="Regex filter on candidate version strings")
     compat.add_argument("--apt-pkg-pattern",
                         help="Regex for APT package names (required for apt channel)")
@@ -1148,6 +1228,8 @@ Exit codes:
                      help="Write BOTH .md and .json reports to DIR (overrides --format/--output)")
     val.add_argument("--library-name", help="Target .so filename (e.g. libccl.so)")
     val.add_argument("--suppressions", help="Path to abidiff suppressions file")
+    val.add_argument("--suppress-stdlib", action="store_true",
+                     help="Filter out C++ stdlib/LLVM/fmt/spdlog internal symbols (leaked template instantiations). Reduces noise in compiler/loader libraries.")
     val.add_argument("--filter", help="Regex filter on version list (e.g. ^2021.14)")
     val.add_argument("--from-version", help="Start of version range (inclusive)")
     val.add_argument("--to-version",   help="End of version range (inclusive)")

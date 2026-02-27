@@ -354,13 +354,33 @@ class PublicAPIFilter:
 
 class ABIAnalyzer:
     """High-level ABI analysis using libabigail"""
-    
-    def __init__(self, suppressions: Optional[Path] = None):
+
+    # Symbol name prefixes indicating C++ stdlib/LLVM/fmt/spdlog internal
+    # template instantiations that leak into .so with default visibility.
+    # These are not part of the library's public API.
+    STDLIB_PREFIXES: tuple = (
+        "_ZNSt", "_ZSt",          # std::
+        "_ZTI", "_ZTS", "_ZTSI",  # typeinfo / typeinfo-string
+        "_ZGV", "_ZGVZ",          # guard variables (once-init)
+        "_ZN4llvm",               # llvm::
+        "_ZN3fmt", "_ZNK3fmt",    # fmt::
+        "_ZN6spdlog",             # spdlog::
+    )
+
+    def __init__(self, suppressions: Optional[Path] = None,
+                 suppress_stdlib: bool = False,
+                 track_experimental: bool = False):
         """
         Args:
-            suppressions: Path to abidiff suppressions file (optional)
+            suppressions:   Path to abidiff suppressions file (optional).
+            suppress_stdlib: If True, filter out C++ stdlib/LLVM/fmt/spdlog
+                             symbol instantiations that leak into .so with
+                             default visibility. These are internal
+                             implementation details, not public API.
         """
         self.suppressions = suppressions
+        self.suppress_stdlib = suppress_stdlib
+        self.track_experimental = track_experimental
         self._check_tools()
     
     def _check_tools(self):
@@ -469,7 +489,48 @@ class ABIAnalyzer:
             api_filter_old or PublicAPIFilter(),
             api_filter_new or PublicAPIFilter()
         )
-        
+
+        # Fix #1: suppress stdlib/LLVM/fmt/spdlog internal symbols
+        if self.suppress_stdlib:
+            def _keep(sym: str) -> bool:
+                return not sym.startswith(self.STDLIB_PREFIXES)
+            comparison.public_removed = [
+                s for s in comparison.public_removed if _keep(s)
+            ]
+            comparison.public_added = [
+                s for s in comparison.public_added if _keep(s)
+            ]
+            comparison.public_changed = [
+                s for s in comparison.public_changed if _keep(s)
+            ]
+
+        # Fix #2: downgrade BREAKING verdict when no symbols were actually
+        # removed after filtering.  abidiff exit-12 can fire for type-layout
+        # or DWARF-only changes that don't remove any callable symbols; those
+        # are at most COMPATIBLE (additions only) or NO_CHANGE.
+        if comparison.verdict == ABIVerdict.BREAKING:
+            effective_removals = comparison.public_removed.copy()
+            
+            # Fix #3: track experimental API promotion (zeXxxExp -> zeXxx)
+            if self.track_experimental:
+                for rem in list(effective_removals):
+                    if rem.endswith("Exp"):
+                        stable_name = rem[:-3]
+                        if stable_name in comparison.public_added:
+                            effective_removals.remove(rem)
+
+            removed_count = len(effective_removals)
+            added_count = len(comparison.public_added)
+            if not self.suppress_stdlib:
+                removed_count += (comparison.functions_removed or 0) + (comparison.variables_removed or 0)
+                added_count += (comparison.functions_added or 0) + (comparison.variables_added or 0)
+            
+            if removed_count == 0:
+                comparison.verdict = (
+                    ABIVerdict.COMPATIBLE if added_count > 0
+                    else ABIVerdict.NO_CHANGE
+                )
+
         return comparison
     
     def _categorize_exit_code(self, exit_code: int) -> ABIVerdict:
