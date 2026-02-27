@@ -2,7 +2,6 @@
 
 import pytest
 import tarfile
-from pathlib import Path
 from abi_scanner.sources.local import LocalSource
 
 

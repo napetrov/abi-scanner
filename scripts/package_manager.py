@@ -2,12 +2,10 @@
 # abi_tracker/scripts/package_manager.py
 # Universal package downloader supporting APT, conda, PyPI
 
-import os
 import sys
 import yaml
 import subprocess
 from pathlib import Path
-from urllib.parse import urlparse
 
 class PackageManager:
     def __init__(self, config_file):
@@ -71,7 +69,7 @@ class PackageManager:
     def _download_conda(self, config, version, pkg_type, output_dir):
         """Download from conda channel"""
         # Use conda/mamba to download
-        channel = config['channel']
+        config['channel']
         
         output_file = Path(output_dir) / f"{self.library}-{version}.tar.bz2"
         
@@ -81,14 +79,14 @@ class PackageManager:
         
         # Use conda download or direct URL
         # TODO: implement conda package download
-        print(f"Conda download not yet implemented", file=sys.stderr)
+        print("Conda download not yet implemented", file=sys.stderr)
         return None
     
     def _download_pypi(self, config, version, pkg_type, output_dir):
         """Download from PyPI"""
         # Use pip download or direct from PyPI API
         # TODO: implement
-        print(f"PyPI download not yet implemented", file=sys.stderr)
+        print("PyPI download not yet implemented", file=sys.stderr)
         return None
     
     def extract_package(self, source, package_file, extract_dir):

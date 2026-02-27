@@ -15,6 +15,35 @@ from .base import PackageSource
 from .utils import safe_extract_tar
 
 
+def normalize_debian_version(ver: str) -> str:
+    """Normalize a Debian version string to PEP 440.
+
+    Handles the ``epoch:upstream-revision~distro`` format by:
+    1. Dropping epoch (``N:``) prefix — rare in Intel repos.
+    2. Stripping the distro suffix (``~22.04``, ``~u22.04``, etc.).
+    3. Replacing ``-`` (Debian revision separator) with ``.``.
+
+    Examples::
+
+        "1.3.26241.67-803.126~22.04" → "1.3.26241.67.803.126"
+        "23.43.27642.67-803.126~22.04" → "23.43.27642.67.803.126"
+        "2025.0.0-1169"               → "2025.0.0.1169"
+        "1:1.3.0-1~focal"             → "1.3.0.1"
+    """
+    # Drop epoch (e.g. "1:")
+    if ":" in ver:
+        ver = ver.split(":", 1)[1]
+    # Strip only known distro/backport tails; preserve prerelease markers like ~rc1, ~beta1
+    ver = re.sub(
+        r"~(?:u?\d+(?:\.\d+)*|focal|jammy|noble|bookworm|bullseye|buster|bionic|xenial)$",
+        "",
+        ver,
+    )
+    # Debian revision: replace first '-' and any subsequent '-' with '.'
+    ver = ver.replace("-", ".")
+    return ver
+
+
 class AptSource(PackageSource):
     """Adapter for APT repositories (.deb packages).
     
@@ -64,8 +93,15 @@ class AptSource(PackageSource):
             raise ValueError(f"Invalid APT index URL (missing /dists/): {url}")
         base = url[:dists_idx]  # https://host/repo (e.g. .../oneapi)
 
-        with urllib.request.urlopen(url, timeout=60) as resp:
-            index_data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                index_data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
+        except urllib.error.HTTPError as e:
+            raise ValueError(f"HTTP {e.code} fetching APT index: {url}") from e
+        except urllib.error.URLError as e:
+            raise ValueError(f"Network error fetching APT index: {e.reason}") from e
+        except (OSError, gzip.BadGzipFile) as e:
+            raise ValueError(f"Failed to decompress APT index {url}: {e}") from e
 
         for block in index_data.split("\n\n"):
             pm = re.search(r"^Package: (.+)$", block, re.M)
@@ -106,16 +142,16 @@ class AptSource(PackageSource):
             if pm and vm and fm and pat.search(pm.group(1).strip()):
                 entries.append((vm.group(1).strip(), fm.group(1).strip(), pm.group(1).strip()))
 
-        from packaging.version import Version
+        from packaging.version import Version, InvalidVersion
 
         def _sort_key(t):
+            norm = normalize_debian_version(t[0])
             try:
-                return Version(t[0])
-            except Exception:
-                # Fallback: pad numeric segments to ensure correct lexicographic order
-                import re as _re
-                parts = _re.split(r'[^0-9]+', t[0])
-                return tuple(int(x) if x else 0 for x in parts)
+                return (0, Version(norm))
+            except InvalidVersion:
+                # Last-resort: pad numeric segments, placed after valid versions
+                parts = re.split(r'[^0-9]+', norm)
+                return (1, tuple(int(x) if x else 0 for x in parts))
 
         return sorted(entries, key=_sort_key)
 

@@ -3,7 +3,7 @@
 import subprocess
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from .base import PackageSource
 from .utils import safe_extract_tar, safe_extract_zip

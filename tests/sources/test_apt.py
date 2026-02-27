@@ -1,7 +1,7 @@
 """Tests for AptSource adapter (mock-based)."""
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from pathlib import Path
 from abi_scanner.sources.apt import AptSource
 
