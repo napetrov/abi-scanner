@@ -345,6 +345,11 @@ def cmd_compare(args):
                 lines.append(
                     f"Variables: -{result.variables_removed} +{result.variables_added} ~{result.variables_changed}"
                 )
+            
+            # Use ABIScanner to fetch categorized symbol delta
+            # This is a stub for the future full implementation where we pass `stats`
+            # For now, we will just use ABIScanner if possible
+            
             details = result.format_details()
             if details:
                 lines.append(details)
