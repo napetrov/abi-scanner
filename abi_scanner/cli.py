@@ -583,7 +583,22 @@ def _render_markdown_report(
     w(f"**Package:** `{_pkg}`  ")
     if source_url:
         w(f"**Source:** [{source_url}]({source_url})  ")
-    w(f"**Library:** `{lib_label}`  ")
+        
+    # Gather all base libs for the header
+    all_libs = set()
+    if library_name:
+        all_libs.add(library_name)
+    else:
+        for _ov, _nv, _k, r, _c in rows:
+            if r and hasattr(r, "_lib_results"):
+                all_libs.update(r._lib_results.keys())
+    
+    if all_libs:
+        libs_list = ", ".join(f"`{x}`" for x in sorted(all_libs))
+        w(f"**Libraries:** {libs_list}  ")
+    else:
+        w(f"**Libraries:** `{lib_label}`  ")
+
     w(f"**Mode:** {mode}  ")
     w(f"**Generated:** {generated_at}  ")
     w(f"**Versions scanned:** {len(rows) + 1} &nbsp;|&nbsp; "
@@ -605,8 +620,8 @@ def _render_markdown_report(
     # ── Summary table ────────────────────────────────────────────────────────
     w("## Summary")
     w()
-    w("| From | To | Type | Result | Tool | Δ Removed | Δ Added |")
-    w("|------|-----|------|--------|------|----------:|--------:|")
+    w("| From | To | Type | Result | Tool | SO-Name Change | Δ Removed | Δ Added |")
+    w("|------|-----|------|--------|------|----------------|----------:|--------:|")
 
     _skip_map = {(sk["from"], sk["to"]): sk.get("reason", "n/a") for sk in skipped}
     for old_v, new_v, kind, result, compliant in rows:
@@ -619,7 +634,17 @@ def _render_markdown_report(
             tool  = "nm-D" if "[nm-D fallback" in (result.stdout or "") else "abidiff"
             rem   = str(result.functions_removed) if result.functions_removed else "—"
             add   = str(result.functions_added)   if result.functions_added   else "—"
-            w(f"| `{old_v}` | `{new_v}` | {kind} | {icon} {verd}{flag} | {tool} | {rem} | {add} |")
+            
+            so_change = "—"
+            if hasattr(result, "_lib_results") and result._lib_results:
+                bumps = []
+                for b_name, b_res in result._lib_results.items():
+                    if b_res.binary_name_old and b_res.binary_name_new and b_res.binary_name_old != b_res.binary_name_new:
+                        bumps.append(f"{b_res.binary_name_old}→{b_res.binary_name_new}")
+                if bumps:
+                    so_change = "<br>".join(bumps)
+                    
+            w(f"| `{old_v}` | `{new_v}` | {kind} | {icon} {verd}{flag} | {tool} | {so_change} | {rem} | {add} |")
     w()
 
     # ── Violations detail ────────────────────────────────────────────────────
@@ -641,12 +666,22 @@ def _render_markdown_report(
             if lib_results:
                 w("**Libraries affected:**")
                 w()
-                w("| Library | Verdict | Removed | Added |")
-                w("|---------|---------|--------:|------:|")
+                w("| Library | Binary Name | Verdict | Removed | Added |")
+                w("|---------|-------------|---------|--------:|------:|")
                 for lib_name, lr in sorted(lib_results.items()):
-                    lib_icon = "✅" if lr.exit_code < 8 else "❌"
+                    lib_icon = ICON.get(lr.exit_code, "⚠️")
                     lib_verdict = VERDICT.get(lr.exit_code, f"rc={lr.exit_code}")
-                    w(f"| `{lib_name}` | {lib_icon} {lib_verdict} | {lr.functions_removed or '—'} | {lr.functions_added or '—'} |")
+                    
+                    if not lr.binary_name_old and lr.binary_name_new:
+                        bin_str = f"➕ `{lr.binary_name_new}`"
+                    elif lr.binary_name_old and not lr.binary_name_new:
+                        bin_str = f"➖ `{lr.binary_name_old}`"
+                    elif lr.binary_name_old != lr.binary_name_new:
+                        bin_str = f"`{lr.binary_name_old}` → `{lr.binary_name_new}`"
+                    else:
+                        bin_str = f"`{lr.binary_name_new}`"
+                        
+                    w(f"| `{lib_name}` | {bin_str} | {lib_icon} {lib_verdict} | {lr.functions_removed or '—'} | {lr.functions_added or '—'} |")
                 w()
 
             for _section, syms_raw, label in [
@@ -897,6 +932,22 @@ def cmd_validate(args):
                     if args.verbose:
                         print(f"  ⚠ nm-D fallback for {base}: {old_v}→{new_v}", file=sys.stderr)
 
+                if base in old_abi and base in new_abi:
+                    r.binary_name_old = old_abi[base]["so"].name
+                    r.binary_name_new = new_abi[base]["so"].name
+                    
+                    # SO-Name bump check
+                    if r.binary_name_old != r.binary_name_new:
+                        # Only break if it's not a major transition
+                        if kind != "major":
+                            r.verdict = ABIVerdict.BREAKING
+                            if r.exit_code < 12:
+                                r.exit_code = 12
+                            # Append a note
+                            if r.stdout is None:
+                                r.stdout = ""
+                            r.stdout = f"[SO-NAME BUMP IN {kind.upper()}] {r.binary_name_old} -> {r.binary_name_new}\n" + r.stdout
+
                 lib_results[base] = r
                 if r.exit_code > worst_exit:
                     worst_exit = r.exit_code
@@ -918,17 +969,18 @@ def cmd_validate(args):
                 allowed = RULES[kind]["allowed_codes"]
 
             # Use the (potentially downgraded) verdict for compliance, not raw exit code
-            compliant = result.verdict.value in allowed
-            rows.append((old_v, new_v, kind, result, compliant))
+            compliant = worst_result.verdict.value in allowed
+            rows.append((old_v, new_v, kind, worst_result, compliant))
 
             if not compliant:
                 violations.append({
                     "from": old_v, "to": new_v, "kind": kind,
-                    "exit_code": result.exit_code,
-                    "verdict": result.verdict.name,
-                    "functions_removed": result.functions_removed,
-                    "functions_added": result.functions_added,
-                    "_result": result,  # keep for --details output
+                    "exit_code": worst_result.exit_code,
+                    "verdict": worst_result.verdict.name,
+                    "functions_removed": worst_result.functions_removed,
+                    "functions_added": worst_result.functions_added,
+                    "_result": worst_result,
+                    "_lib_results": lib_results,  # per-library breakdown
                 })
 
     # ── Output ────────────────────────────────────────────────────────────────
