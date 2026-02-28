@@ -90,7 +90,7 @@ def _generate_baseline(lib_path: Path, output_path: Path,
 
     cmd = [abidw, "--out-file", str(output_path)]
     if headers_dir and headers_dir.is_dir():
-        cmd.extend(["--hd1", str(headers_dir)])
+        cmd.extend(["--headers-dir1", str(headers_dir)])
     cmd.append(str(lib_path))
     if verbose:
         print(f"  abidw: {lib_path.name}" + (f" (headers: {headers_dir})" if headers_dir else ""),
@@ -270,7 +270,8 @@ def cmd_compare(args):
         library_name: Optional[str] = getattr(args, "library_name", None)
         suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
         _apt_index_url: Optional[str] = getattr(args, "apt_index_url", None)
-        _with_dev = getattr(args, "with_dev_package", False)
+        # We always want headers if possible to do clean API+ABI separation
+        _with_dev = getattr(args, "with_dev_package", True)
         _track_exp = getattr(args, "track_experimental", False)
 
         with tempfile.TemporaryDirectory(prefix="abi_scanner_") as tmpdir:
@@ -385,7 +386,7 @@ def cmd_compatible(args):
     library_name: Optional[str] = getattr(args, "library_name", None)
     suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
     _apt_index_url: Optional[str] = getattr(args, "apt_index_url", None)
-    _with_dev = getattr(args, "with_dev_package", False)
+    _with_dev = getattr(args, "with_dev_package", True)
     _track_exp = getattr(args, "track_experimental", False)
 
     # --- Gather candidate versions ----------------------------------------
@@ -620,7 +621,7 @@ def _render_markdown_report(
     # ── Summary table ────────────────────────────────────────────────────────
     w("## Summary")
     w()
-    w("| From | To | Type | Result | Tool | SO-Name Change | Δ Removed | Δ Added |")
+    w("| From | To | Type | ABI/API Status | Tool | SO-Name Change | Δ Removed | Δ Added |")
     w("|------|-----|------|--------|------|----------------|----------:|--------:|")
 
     _skip_map = {(sk["from"], sk["to"]): sk.get("reason", "n/a") for sk in skipped}
@@ -853,6 +854,7 @@ def cmd_validate(args):
         abi_reason_cache: dict[tuple, str] = {}
 
         _apt_version_to_pkg = locals().get("_apt_version_to_pkg", {})
+        _with_dev = getattr(args, "with_dev_package", True)
 
         def get_abi(ver_str: str, idx: int) -> "Optional[dict[str, dict]]":
             pkg_name = _apt_version_to_pkg.get(ver_str, spec.package)
@@ -863,7 +865,8 @@ def cmd_validate(args):
                 channel=spec.channel, package=pkg_name, version=ver_str
             )
             libs = _download_and_prepare(vspec, tmp / f"pkg_{idx}", library_name,
-                                         args.verbose, apt_index_url=_apt_index_url)
+                                         args.verbose, apt_index_url=_apt_index_url,
+                                         with_dev_package=_with_dev)
             if not libs:
                 abi_cache[key] = None
                 abi_reason_cache[key] = "libraries not found or download failed"
@@ -872,7 +875,8 @@ def cmd_validate(args):
             result_dict = {}
             for base, lib_path in libs.items():
                 abi_path = tmp / f"{idx}_{base}.abi"
-                _ok_abi, _abidw_reason = _generate_baseline(lib_path, abi_path, args.verbose)
+                h_dir = getattr(lib_path, "_headers_dir", None)
+                _ok_abi, _abidw_reason = _generate_baseline(lib_path, abi_path, args.verbose, headers_dir=h_dir)
                 result_dict[base] = {
                     "so": lib_path,
                     "abi": abi_path if _ok_abi else None
