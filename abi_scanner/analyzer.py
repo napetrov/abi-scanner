@@ -513,19 +513,45 @@ class ABIAnalyzer:
         if comparison.verdict == ABIVerdict.BREAKING:
             effective_removals = comparison.public_removed.copy()
             
-            # Fix #3: track experimental API promotion (zeXxxExp -> zeXxx)
+            # Fix #3: track experimental API promotion and preview changes
             if self.track_experimental:
-                for rem in list(effective_removals):
-                    if rem.endswith("Exp"):
-                        stable_name = rem[:-3]
-                        if stable_name in comparison.public_added:
-                            effective_removals.remove(rem)
+                from .module_scanner import SymbolClassifier
+                classifier = SymbolClassifier()
+                
+                # Precompute demangled names for fast lookup
+                added_demangled = {
+                    demangle_symbol(s) if s.startswith("_Z") else s
+                    for s in comparison.public_added
+                }
+                
+                # Single-pass filter
+                new_removals = []
+                for rem in effective_removals:
+                    # Ignore preview/experimental
+                    if classifier.classify(rem) == "preview":
+                        continue
+                    
+                    # Ignore promotions
+                    rem_demangled = demangle_symbol(rem) if rem.startswith("_Z") else rem
+                    if rem_demangled.endswith("Exp"):
+                        stable_name = rem_demangled[:-3]
+                        if stable_name in added_demangled:
+                            continue
+                    
+                    new_removals.append(rem)
+                effective_removals = new_removals
 
             removed_count = len(effective_removals)
             added_count = len(comparison.public_added)
+            
+            # When suppress_stdlib is False, we use raw abidiff counts and compute
+            # unparsed_removals as the portion of raw_removals not represented in
+            # comparison.public_removed. We intentionally add unparsed_removals = max(0, raw_removals - len(comparison.public_removed))
+            # to removed_count to account for those unparsed removals.
             if not self.suppress_stdlib:
-                removed_count += (comparison.functions_removed or 0) + (comparison.variables_removed or 0)
-                added_count += (comparison.functions_added or 0) + (comparison.variables_added or 0)
+                raw_removals = (comparison.functions_removed or 0) + (comparison.variables_removed or 0)
+                unparsed_removals = max(0, raw_removals - len(comparison.public_removed))
+                removed_count += unparsed_removals
             
             if removed_count == 0:
                 comparison.verdict = (
