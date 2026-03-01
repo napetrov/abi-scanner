@@ -43,67 +43,12 @@ import sys
 
 # Import shared extract_namespace to avoid duplicating regex logic
 from abi_scanner.analyzer import extract_namespace
-
-
-def demangle_symbol(symbol: str) -> str:
-    """Demangle a C++ symbol using c++filt.
-
-    Args:
-        symbol: Mangled symbol name
-
-    Returns:
-        Demangled symbol name, or original if demangling fails
-    """
-    try:
-        result = subprocess.run(
-            ['c++filt', symbol], capture_output=True, text=True, timeout=1, check=False
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return symbol
-
-
-
-class SymbolClassifier:
-    """Classify C++ symbols into public, preview, or internal API categories.
-
-    Uses regex patterns on demangled names to identify:
-    - Internal: implementation details (::detail::, ::backend::, mkl_serv_, etc.)
-    - Preview: unstable/experimental APIs (::preview::, ::experimental::)
-    - Public: stable public APIs (everything else)
-    """
-
-    def __init__(self):
-        """Initialize symbol classifier with predefined patterns."""
-        self.internal_patterns = [
-            r"::detail::", r"::backend::", r"::internal::", r"::impl::",
-            r"^mkl_serv_", r"^tbb::", r"^daal::.*::internal::",
-        ]
-        self.preview_patterns = [r"::preview::", r"::experimental::"]
-        self._internal_re = [re.compile(p) for p in self.internal_patterns]
-        self._preview_re  = [re.compile(p) for p in self.preview_patterns]
-
-    def classify(self, symbol: str) -> str:
-        """Classify a symbol into 'internal', 'preview', or 'public'.
-
-        Args:
-            symbol: Mangled or demangled C++ symbol name
-
-        Returns:
-            Category string: 'internal', 'preview', or 'public'
-        """
-        demangled = demangle_symbol(symbol) if symbol.startswith('_Z') else symbol
-        for p in self._internal_re:
-            if p.search(demangled):
-                return "internal"
-        for p in self._preview_re:
-            if p.search(demangled):
-                return "preview"
-        return "public"
-
-
+from abi_scanner.module_scanner import (
+    SymbolClassifier,
+    demangle_symbol,
+    extract_symbol_lists,
+    parse_abidiff_symbols,
+)
 
 
 # ── APT channel support ───────────────────────────────────────────────────────
@@ -333,70 +278,6 @@ def generate_abi_baseline(lib_path: Path, output_path: Path,
             print(f"  abidw failed: {result.stderr[-300:]}")
         return False
     return True
-
-
-def _iter_abidiff_symbols(stdout: str):
-    """Yield (section, raw_symbol) from abidiff stdout."""
-    current_section = None
-    for line in stdout.splitlines():
-        s = line.strip()
-        if "Removed function symbols" in s:
-            current_section = "removed"
-        elif "Added function symbols" in s:
-            current_section = "added"
-        elif s.endswith("symbols:") and "function symbols" not in s:
-            current_section = None
-        elif (s.startswith("[D]") or s.startswith("[A]")) and current_section:
-            parts = s.split(maxsplit=1)
-            symbol = parts[1] if len(parts) > 1 else ""
-            yield current_section, symbol
-
-
-def parse_abidiff_symbols(stdout: str, classifier: SymbolClassifier) -> Dict[str, Dict[str, int]]:
-    """Parse abidiff output and classify symbols by category.
-
-    Args:
-        stdout: abidiff stdout output
-        classifier: SymbolClassifier instance
-
-    Returns:
-        Dictionary with structure: {category: {action: count}}
-        where category is 'public'/'preview'/'internal'
-        and action is 'removed'/'added'
-    """
-    stats = {
-        "public":   {"removed": 0, "added": 0},
-        "preview":  {"removed": 0, "added": 0},
-        "internal": {"removed": 0, "added": 0},
-    }
-    for section, symbol in _iter_abidiff_symbols(stdout):
-        cat = classifier.classify(symbol)
-        if cat in stats:
-            stats[cat][section] += 1
-    return stats
-
-
-def extract_symbol_lists(stdout: str, classifier: SymbolClassifier) -> Dict[str, Dict[str, List[str]]]:
-    """Extract per-category lists of removed/added symbol names from abidiff output.
-
-    Args:
-        stdout: abidiff stdout output
-        classifier: SymbolClassifier instance
-
-    Returns:
-        Dictionary {category: {action: [demangled_name, ...]}}
-    """
-    result: Dict[str, Dict[str, List[str]]] = {
-        "public":   {"removed": [], "added": []},
-        "preview":  {"removed": [], "added": []},
-        "internal": {"removed": [], "added": []},
-    }
-    for section, symbol in _iter_abidiff_symbols(stdout):
-        demangled = demangle_symbol(symbol) if symbol.startswith("_Z") else symbol
-        cat = classifier.classify(demangled)
-        if cat in result:
-            result[cat][section].append(demangled)
-    return result
 
 
 def compare_abi(old_abi: Path, new_abi: Path, suppressions: Optional[Path] = None,
