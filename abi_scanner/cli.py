@@ -466,7 +466,8 @@ def cmd_compatible(args):
             return 1
 
         analyzer = ABIAnalyzer(suppressions=suppressions,
-                             suppress_stdlib=getattr(args, "suppress_stdlib", False))
+                             suppress_stdlib=getattr(args, "suppress_stdlib", False),
+                             track_experimental=getattr(args, "track_experimental", False))
         api_filter = PublicAPIFilter()
 
         for idx, ver in enumerate(candidates):
@@ -853,7 +854,8 @@ def cmd_validate(args):
     with tempfile.TemporaryDirectory(prefix="abi_scanner_val_") as tmpdir:
         tmp = Path(tmpdir)
         analyzer = ABIAnalyzer(suppressions=suppressions,
-                             suppress_stdlib=getattr(args, "suppress_stdlib", False))
+                             suppress_stdlib=getattr(args, "suppress_stdlib", False),
+                             track_experimental=getattr(args, "track_experimental", False))
         api_filter = PublicAPIFilter()
 
         # Cache baselines: (pkg_name, ver_str) → Path|None  (avoids aliasing when
