@@ -524,7 +524,7 @@ def cmd_compatible(args):
         print(f"  {base_spec.version:<18} (base)")
         for ver, result in results:
             if result is None:
-                verdict = "⚠️  SKIPPED"
+                verdict = "⚠️  COMPARE_FAILED"
             else:
                 verdict = VERDICT.get(result.exit_code, f"rc={result.exit_code}")
                 if result.functions_removed or result.functions_added or result.functions_changed:
@@ -582,6 +582,9 @@ def _render_markdown_report(
     w()
     w(f"**Channel:** `{_channel}`  ")
     w(f"**Package:** `{_pkg}`  ")
+    if _channel == "apt":
+        _apt_url = source_url or "https://apt.repos.intel.com/oneapi"
+        w(f"**APT Index:** `{_apt_url}`  ")
     if source_url:
         w(f"**Source:** [{source_url}]({source_url})  ")
         
@@ -627,7 +630,7 @@ def _render_markdown_report(
     _skip_map = {(sk["from"], sk["to"]): sk.get("reason", "n/a") for sk in skipped}
     for old_v, new_v, kind, result, compliant in rows:
         if result is None:
-            w(f"| `{old_v}` | `{new_v}` | {kind} | ⚠️ SKIPPED | — | — | — |")
+            w(f"| `{old_v}` | `{new_v}` | {kind} | ⚠️ COMPARE_FAILED | — | — | — |")
         else:
             icon  = ICON.get(result.verdict.value, "?")
             verd  = result.verdict.name
@@ -900,7 +903,7 @@ def cmd_validate(args):
                 else:
                     new_pkg = _apt_version_to_pkg.get(new_v, spec.package)
                     reason = abi_reason_cache.get((new_pkg, new_v))
-                skipped.append({"from": old_v, "to": new_v, "kind": kind, "reason": reason or "library not found or abidw failed"})
+                skipped.append({"from": old_v, "to": new_v, "kind": kind, "reason": reason or "Download failed or library not found"})
                 rows.append((old_v, new_v, kind, None, None))
                 continue
 
@@ -959,7 +962,7 @@ def cmd_validate(args):
 
             if worst_result is None:
                 skipped.append({"from": old_v, "to": new_v, "kind": kind,
-                                "reason": "No libraries compared successfully"})
+                                "reason": "Download failed or library not found"})
                 rows.append((old_v, new_v, kind, None, None))
                 continue
 
@@ -1116,12 +1119,12 @@ def cmd_validate(args):
         _p(f"SemVer compliance report — {spec}{lib_label}  [{mode} mode]")
         _p(f"{'From':<22} {'To':<22} {'Type':<8} {'Status'}")
         _p("-" * 75)
-        _skip_reasons = {(sk["from"], sk["to"]): sk.get("reason", "library not found or abidw failed")
+        _skip_reasons = {(sk["from"], sk["to"]): sk.get("reason", "Download failed or library not found")
                          for sk in skipped}
         for old_v, new_v, kind, result, compliant in rows:
             if result is None:
                 reason = _skip_reasons.get((old_v, new_v), "unknown")
-                line = f"  ⚠️  SKIPPED ({reason})"
+                line = f"  ⚠️  COMPARE_FAILED ({reason})"
             else:
                 icon    = ICON.get(result.verdict.value, "?")
                 verdict = result.verdict.name
@@ -1164,7 +1167,7 @@ def cmd_validate(args):
         out_stream = sys.stderr if _use_stderr else sys.stdout
         print(f"\nWarning: {len(skipped)} transition(s) skipped:", file=out_stream)
         for sk in skipped:
-            reason = sk.get("reason", "library not found or abidw failed")
+            reason = sk.get("reason", "Download failed or library not found")
             print(f"  ⚠️  {sk['from']} -> {sk['to']}  [{sk['kind'].upper()}]  — {reason}", file=out_stream)
         if args.fail_on != "none":
             print("  Note: skipped transitions are NOT counted as violations.", file=sys.stderr)
