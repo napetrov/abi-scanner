@@ -543,8 +543,12 @@ class ABIAnalyzer:
             # Total actual removals we care about:
             if not self.suppress_stdlib:
                 raw_removals = (comparison.functions_removed or 0) + (comparison.variables_removed or 0)
-                # Any removal that is NOT one of our ignored preview symbols counts
-                removed_count += max(0, raw_removals - ignored_count - removed_count)
+                # raw_removals includes BOTH internal and public. 
+                # Our public_removed list ONLY includes non-suppressed symbols, so if we're not suppressing stdlib,
+                # public_removed actually contains *everything*. So the raw count isn't needed.
+                # However, if there are removals we didn't parse, we must count them.
+                unparsed_removals = max(0, raw_removals - len(comparison.public_removed))
+                removed_count += unparsed_removals
             
             if removed_count == 0:
                 comparison.verdict = (
