@@ -47,6 +47,9 @@ def test_package_source_is_abstract():
 
 class DummySource(PackageSource):
     """Minimal concrete implementation for testing."""
+
+    def list_versions(self, package: str, **kwargs):
+        return []
     
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:
         return output_dir / f"{package_name}-{version}.tar"

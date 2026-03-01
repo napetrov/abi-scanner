@@ -3,7 +3,16 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+
+
+@dataclass
+class VersionInfo:
+    """Normalized version information from any source."""
+    version: str
+    filename: Optional[str] = None
+    package_name: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -24,6 +33,15 @@ class PackageSource(ABC):
     
     Each source adapter (conda, apt, local) implements this interface.
     """
+
+    @abstractmethod
+    def list_versions(self, package: str, **kwargs) -> List[VersionInfo]:
+        """Return available versions for a package in this source.
+
+        Adapter-specific kwargs are allowed for source-specific filters
+        (e.g. APT package-name regex or custom index URL).
+        """
+        pass
     
     @abstractmethod
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:
