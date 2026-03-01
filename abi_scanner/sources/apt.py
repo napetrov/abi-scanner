@@ -5,6 +5,7 @@ import sys
 import subprocess
 from pathlib import Path
 from typing import List, Optional
+from .base import VersionInfo
 import gzip
 import re
 import urllib.request
@@ -121,11 +122,10 @@ class AptSource(PackageSource):
         )
 
 
-    def list_versions(self, pkg_pattern: str, index_url: Optional[str] = None) -> list:
-        """Return sorted list of (version, filename) tuples for packages matching pkg_pattern.
+    def list_versions(self, pkg_pattern: str, index_url: Optional[str] = None) -> List[VersionInfo]:
+        """Return sorted list of VersionInfo for packages matching pkg_pattern.
 
         pkg_pattern: extended POSIX regex matching Debian package names.
-        Returns list of (version_str, filename_str) sorted by version.
         """
         import re as _re
         url = index_url or self.INTEL_APT_INDEX
@@ -157,7 +157,8 @@ class AptSource(PackageSource):
                 parts = re.split(r'[^0-9]+', norm)
                 return (1, tuple(int(x) if x else 0 for x in parts))
 
-        return sorted(entries, key=_sort_key)
+        sorted_entries = sorted(entries, key=_sort_key)
+        return [VersionInfo(version=v, filename=f, package_name=p) for v, f, p in sorted_entries]
 
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:
         """Download .deb package.

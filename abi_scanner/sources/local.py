@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from typing import List
 
-from .base import PackageSource
+from .base import PackageSource, VersionInfo
 from .utils import safe_extract_tar, safe_extract_zip
 
 
@@ -19,7 +19,7 @@ class LocalSource(PackageSource):
     Unlike other adapters, this one doesn't download anything, just wraps local paths.
     """
 
-    def list_versions(self, package: str, **kwargs) -> list:
+    def list_versions(self, _package: str, **_kwargs) -> List[VersionInfo]:
         """Local source has no version index; return empty list."""
         return []
     

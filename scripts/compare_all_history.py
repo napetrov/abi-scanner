@@ -51,12 +51,13 @@ def get_available_versions(channel: str, package: str,
     if channel == "apt":
         if not apt_pkg_pattern:
             raise ValueError("--apt-pkg-pattern is required for channel=apt")
-        rows = source.list_versions(apt_pkg_pattern, index_url=apt_index_url)
-        versions = [v for v, _filename in rows]
-        apt_version_map = {v: filename for v, filename in rows}
+        infos = source.list_versions(apt_pkg_pattern, index_url=apt_index_url)
+        versions = [i.version for i in infos]
+        apt_version_map = {i.version: i.filename for i in infos}
         return versions, apt_version_map
 
-    return source.list_versions(package), {}
+    infos = source.list_versions(package)
+    return [i.version for i in infos], {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -237,6 +238,8 @@ def main():
     apt_version_map = {}
     if args.channel == "apt" and not args.library_name:
         parser.error('--library-name is required for channel=apt (e.g. libsycl.so or libccl.so)')
+    if args.channel == "apt" and args.devel_package:
+        parser.error('--devel-package is not currently supported for channel=apt')
 
     apt_index_url = None
     if args.channel == "apt":

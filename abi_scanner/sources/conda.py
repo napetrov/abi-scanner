@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import List
 
-from .base import PackageSource
+from .base import PackageSource, VersionInfo
 from .utils import safe_extract_tar, safe_extract_zip
 
 
@@ -45,7 +45,7 @@ class CondaSource(PackageSource):
             ) from None
     
 
-    def list_versions(self, package: str) -> list:
+    def list_versions(self, package: str) -> List[VersionInfo]:
         """Return sorted list of available versions for a package on this channel.
 
         Uses micromamba search --json.
