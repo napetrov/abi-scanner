@@ -517,17 +517,29 @@ class ABIAnalyzer:
             if self.track_experimental:
                 from .module_scanner import SymbolClassifier
                 classifier = SymbolClassifier()
-                for rem in list(effective_removals):
-                    # Ignore removals of preview/experimental APIs
+                
+                # Precompute demangled names for fast lookup
+                added_demangled = {
+                    demangle_symbol(s) if s.startswith("_Z") else s
+                    for s in comparison.public_added
+                }
+                
+                # Single-pass filter
+                new_removals = []
+                for rem in effective_removals:
+                    # Ignore preview/experimental
                     if classifier.classify(rem) == "preview":
-                        effective_removals.remove(rem)
                         continue
-                        
-                    # Ignore if it's a promotion (zeXxxExp -> zeXxx)
-                    if rem.endswith("Exp"):
-                        stable_name = rem[:-3]
-                        if stable_name in comparison.public_added:
-                            effective_removals.remove(rem)
+                    
+                    # Ignore promotions
+                    rem_demangled = demangle_symbol(rem) if rem.startswith("_Z") else rem
+                    if rem_demangled.endswith("Exp"):
+                        stable_name = rem_demangled[:-3]
+                        if stable_name in added_demangled:
+                            continue
+                    
+                    new_removals.append(rem)
+                effective_removals = new_removals
 
             removed_count = len(effective_removals)
             added_count = len(comparison.public_added)
@@ -537,16 +549,9 @@ class ABIAnalyzer:
             # For simplicity, if we have 0 effective_removals, we only downgrade if
             # either suppress_stdlib=True OR the raw removed count is exactly equal to the number of preview symbols we just ignored.
             
-            # To keep it robust, we calculate how many symbols were ignored:
-            ignored_count = len(comparison.public_removed) - removed_count
-            
             # Total actual removals we care about:
             if not self.suppress_stdlib:
                 raw_removals = (comparison.functions_removed or 0) + (comparison.variables_removed or 0)
-                # raw_removals includes BOTH internal and public. 
-                # Our public_removed list ONLY includes non-suppressed symbols, so if we're not suppressing stdlib,
-                # public_removed actually contains *everything*. So the raw count isn't needed.
-                # However, if there are removals we didn't parse, we must count them.
                 unparsed_removals = max(0, raw_removals - len(comparison.public_removed))
                 removed_count += unparsed_removals
             
