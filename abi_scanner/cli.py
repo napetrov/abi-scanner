@@ -1300,6 +1300,7 @@ Exit codes:
     cp.add_argument("--fail-on", choices=["breaking", "any", "none"], default="none")
     cp.add_argument("--library-name", help="Target .so filename (e.g. libsycl.so)")
     cp.add_argument("--suppressions", help="Path to abidiff suppressions file")
+    cp.add_argument("--track-experimental", action="store_true", help="Do not flag removal/modification of experimental/preview symbols as BREAKING")
     cp.add_argument("--suppress-stdlib", action="store_true",
                      help="Filter out C++ stdlib/LLVM/fmt/spdlog internal symbols (leaked template instantiations). Reduces noise in compiler/loader libraries.")
     cp.add_argument("--apt-index-url", metavar="URL",
@@ -1313,6 +1314,7 @@ Exit codes:
     compat.add_argument("--format", choices=["text", "json"], default="text")
     compat.add_argument("--library-name", help="Target .so filename (e.g. libsycl.so)")
     compat.add_argument("--suppressions", help="Path to abidiff suppressions file")
+    compat.add_argument("--track-experimental", action="store_true", help="Do not flag removal/modification of experimental/preview symbols as BREAKING")
     compat.add_argument("--suppress-stdlib", action="store_true",
                      help="Filter out C++ stdlib/LLVM/fmt/spdlog internal symbols (leaked template instantiations). Reduces noise in compiler/loader libraries.")
     compat.add_argument("--filter", help="Regex filter on candidate version strings")
@@ -1339,6 +1341,7 @@ Exit codes:
                      help="Write BOTH .md and .json reports to DIR (overrides --format/--output)")
     val.add_argument("--library-name", help="Target .so filename (e.g. libccl.so)")
     val.add_argument("--suppressions", help="Path to abidiff suppressions file")
+    val.add_argument("--track-experimental", action="store_true", help="Do not flag removal/modification of experimental/preview symbols as BREAKING")
     val.add_argument("--suppress-stdlib", action="store_true",
                      help="Filter out C++ stdlib/LLVM/fmt/spdlog internal symbols (leaked template instantiations). Reduces noise in compiler/loader libraries.")
     val.add_argument("--filter", help="Regex filter on version list (e.g. ^2021.14)")

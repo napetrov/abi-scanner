@@ -513,9 +513,17 @@ class ABIAnalyzer:
         if comparison.verdict == ABIVerdict.BREAKING:
             effective_removals = comparison.public_removed.copy()
             
-            # Fix #3: track experimental API promotion (zeXxxExp -> zeXxx)
+            # Fix #3: track experimental API promotion and preview changes
             if self.track_experimental:
+                from .module_scanner import SymbolClassifier
+                classifier = SymbolClassifier()
                 for rem in list(effective_removals):
+                    # Ignore removals of preview/experimental APIs
+                    if classifier.classify(rem) == "preview":
+                        effective_removals.remove(rem)
+                        continue
+                        
+                    # Ignore if it's a promotion (zeXxxExp -> zeXxx)
                     if rem.endswith("Exp"):
                         stable_name = rem[:-3]
                         if stable_name in comparison.public_added:
