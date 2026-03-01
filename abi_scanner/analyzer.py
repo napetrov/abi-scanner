@@ -531,9 +531,20 @@ class ABIAnalyzer:
 
             removed_count = len(effective_removals)
             added_count = len(comparison.public_added)
+            
+            # If suppress_stdlib is False, we shouldn't suppress ANY internal removals, 
+            # so we must rely on the raw abidiff counters for internals minus the ignored previews.
+            # For simplicity, if we have 0 effective_removals, we only downgrade if
+            # either suppress_stdlib=True OR the raw removed count is exactly equal to the number of preview symbols we just ignored.
+            
+            # To keep it robust, we calculate how many symbols were ignored:
+            ignored_count = len(comparison.public_removed) - removed_count
+            
+            # Total actual removals we care about:
             if not self.suppress_stdlib:
-                removed_count += (comparison.functions_removed or 0) + (comparison.variables_removed or 0)
-                added_count += (comparison.functions_added or 0) + (comparison.variables_added or 0)
+                raw_removals = (comparison.functions_removed or 0) + (comparison.variables_removed or 0)
+                # Any removal that is NOT one of our ignored preview symbols counts
+                removed_count += max(0, raw_removals - ignored_count - removed_count)
             
             if removed_count == 0:
                 comparison.verdict = (
