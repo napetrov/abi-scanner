@@ -24,6 +24,15 @@ class PackageSource(ABC):
     
     Each source adapter (conda, apt, local) implements this interface.
     """
+
+    @abstractmethod
+    def list_versions(self, package: str, **kwargs) -> list:
+        """Return available versions for a package in this source.
+
+        Adapter-specific kwargs are allowed for source-specific filters
+        (e.g. APT package-name regex or custom index URL).
+        """
+        pass
     
     @abstractmethod
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:

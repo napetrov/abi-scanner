@@ -18,6 +18,10 @@ class LocalSource(PackageSource):
     
     Unlike other adapters, this one doesn't download anything, just wraps local paths.
     """
+
+    def list_versions(self, package: str, **kwargs) -> list:
+        """Local source has no version index; return empty list."""
+        return []
     
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:
         """'Download' (copy) a local package file.

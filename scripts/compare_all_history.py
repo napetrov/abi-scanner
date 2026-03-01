@@ -49,58 +49,38 @@ from abi_scanner.module_scanner import (
     extract_symbol_lists,
     parse_abidiff_symbols,
 )
+from abi_scanner.package_spec import PackageSpec
+from abi_scanner.sources.factory import create_source
 
 
 # ── APT channel support ───────────────────────────────────────────────────────
-import gzip as _gzip
-import re as _apt_re
 import urllib.request as _urllib_req
 
 INTEL_APT_BASE = 'https://apt.repos.intel.com/oneapi'
 INTEL_APT_PACKAGES_URL = INTEL_APT_BASE + '/dists/all/main/binary-amd64/Packages.gz'
 
 
-def get_apt_package_versions(pkg_pattern: str,
-                              apt_packages_url: str = INTEL_APT_PACKAGES_URL):
-    """Fetch available versions for packages matching pkg_pattern from Intel APT.
+def get_available_versions(channel: str, package: str,
+                           apt_pkg_pattern: Optional[str] = None,
+                           apt_index_url: Optional[str] = None) -> Tuple[List[str], Dict[str, str]]:
+    """Fetch sorted versions via the unified source adapter interface.
 
-    pkg_pattern: regex that matches package names (e.g.
-        r'^intel-oneapi-compiler-dpcpp-cpp-runtime-2025\\.\\d+$').
-    Returns sorted list of (version, filename) tuples.
+    Returns:
+        versions: list of version strings
+        apt_version_map: mapping version -> .deb filename (APT only, else empty)
     """
-    try:
-        data = _gzip.decompress(
-            _urllib_req.urlopen(apt_packages_url, timeout=60).read()
-        ).decode('utf-8', 'ignore')
-    except Exception as exc:
-        print(f'  APT index fetch failed: {exc}', file=sys.stderr)
-        return []
+    spec = PackageSpec(channel=channel, package=package, version=None)
+    source = create_source(spec)
 
-    pat = _apt_re.compile(pkg_pattern)
-    entries = []
-    for block in data.split('\n\n'):
-        pm = _apt_re.search(r'^Package: (.+)$', block, _apt_re.M)
-        if not pm or not pat.match(pm.group(1)):
-            continue
-        vm = _apt_re.search(r'^Version: (.+)$', block, _apt_re.M)
-        fm = _apt_re.search(r'^Filename: (.+)$', block, _apt_re.M)
-        if vm and fm:
-            entries.append((vm.group(1).strip(), fm.group(1).strip()))
+    if channel == "apt":
+        if not apt_pkg_pattern:
+            raise ValueError("--apt-pkg-pattern is required for channel=apt")
+        rows = source.list_versions(apt_pkg_pattern, index_url=apt_index_url)
+        versions = [v for v, _filename in rows]
+        apt_version_map = {v: filename for v, filename in rows}
+        return versions, apt_version_map
 
-    seen, rows = set(), []
-    for v, f in entries:
-        if v not in seen:
-            seen.add(v)
-            rows.append((v, f))
-
-    def _verkey(v):
-        try:
-            base, build = v.split('-')
-            return tuple(map(int, base.split('.'))) + (int(build),)
-        except Exception:
-            return (0,)
-
-    return sorted(rows, key=lambda x: _verkey(x[0]))
+    return source.list_versions(package), {}
 
 
 def download_and_extract_apt(version: str, filename: str, cache_dir: Path,
@@ -160,31 +140,6 @@ def find_library_apt(extract_dir: Path, library_name: str,
     return None
 
 # ─────────────────────────────────────────────────────────────────────────────
-def get_package_versions(channel, package):
-    """Get all available versions for a package from conda channel.
-
-    Args:
-        channel: Conda channel name (e.g., 'conda-forge')
-        package: Package name (e.g., 'dal')
-
-    Returns:
-        List of version strings sorted by packaging.version.Version
-    """
-    result = subprocess.run(
-        [_get_micromamba(), "search", "-c", channel, package, "--json"],
-        capture_output=True, text=True, check=False
-    )
-    if result.returncode != 0:
-        return []
-    data = json.loads(result.stdout)
-    versions = list(set(pkg["version"] for pkg in data.get("result", {}).get("pkgs", [])))
-    from packaging.version import Version
-    try:
-        return sorted(versions, key=lambda v: Version(v))
-    except Exception:
-        return sorted(versions)
-
-
 def download_packages(channel: str, package: str, version: str, env_path: Path,
                       devel_package: Optional[str] = None, verbose: bool = False) -> bool:
     """Download runtime and optional development packages into environment.
@@ -378,17 +333,22 @@ def main():
     classifier = SymbolClassifier() if args.track_preview or args.details or args.json else None
     print(f"Fetching versions for {args.channel}:{args.package}...")
     apt_version_map = {}
+    if args.channel == "apt" and not args.library_name:
+        parser.error('--library-name is required for channel=apt (e.g. libsycl.so or libccl.so)')
+
+    apt_index_url = None
     if args.channel == "apt":
-        if not args.library_name:
-            parser.error('--library-name is required for channel=apt (e.g. libsycl.so or libccl.so)')
         apt_index_url = args.apt_base_url.rstrip("/") + "/dists/all/main/binary-amd64/Packages.gz"
-        if not args.apt_pkg_pattern:
-            parser.error('--apt-pkg-pattern is required for channel=apt (e.g. ^intel-oneapi-compiler-dpcpp-cpp-runtime-2025\\.\\d+$)')
-        apt_rows = get_apt_package_versions(args.apt_pkg_pattern, apt_index_url)
-        versions = [v for v,_ in apt_rows]
-        apt_version_map = {v:f for v,f in apt_rows}
-    else:
-        versions = get_package_versions(args.channel, args.package)
+
+    try:
+        versions, apt_version_map = get_available_versions(
+            args.channel,
+            args.package,
+            apt_pkg_pattern=args.apt_pkg_pattern,
+            apt_index_url=apt_index_url,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.filter_version:
         try:
             version_re = re.compile(args.filter_version)
