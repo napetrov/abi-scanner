@@ -903,7 +903,7 @@ def cmd_validate(args):
                 else:
                     new_pkg = _apt_version_to_pkg.get(new_v, spec.package)
                     reason = abi_reason_cache.get((new_pkg, new_v))
-                skipped.append({"from": old_v, "to": new_v, "kind": kind, "reason": reason or "library not found or abidw failed"})
+                skipped.append({"from": old_v, "to": new_v, "kind": kind, "reason": reason or "Download failed or library not found"})
                 rows.append((old_v, new_v, kind, None, None))
                 continue
 
@@ -962,7 +962,7 @@ def cmd_validate(args):
 
             if worst_result is None:
                 skipped.append({"from": old_v, "to": new_v, "kind": kind,
-                                "reason": "No libraries compared successfully"})
+                                "reason": "Download failed or library not found"})
                 rows.append((old_v, new_v, kind, None, None))
                 continue
 
