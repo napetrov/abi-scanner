@@ -84,9 +84,11 @@ class CondaSource(PackageSource):
         })
         from packaging.version import Version
         try:
-            return sorted(versions, key=lambda v: Version(v))
+            ordered = sorted(versions, key=lambda v: Version(v))
         except Exception:
-            return sorted(versions)
+            ordered = sorted(versions)
+
+        return [VersionInfo(version=v) for v in ordered]
 
     def download(self, package_name: str, version: str, output_dir: Path) -> Path:
         """Download conda package.
