@@ -44,7 +44,7 @@ Make `abi-scanner` usable as a standard compatibility gate across many products/
         "internal": {"removed":0,"added":0}
       },
       "skip": {
-        "code": "LIB_NOT_FOUND|BASELINE_FAIL|EXTRACT_FAIL|TOOL_ERROR|TIMEOUT|N/A",
+        "code": "LIB_NOT_FOUND|BASELINE_FAIL|EXTRACT_FAIL|DOWNLOAD_FAIL|PARSER_FAIL|POLICY_DISABLED|TOOL_ERROR|TIMEOUT",
         "message": "string"
       },
       "artifacts": {

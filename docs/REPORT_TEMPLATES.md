@@ -56,7 +56,11 @@ Date: `<YYYY-MM-DD>`
 | LIB_NOT_FOUND | `<N>` | `<%>` |
 | BASELINE_FAIL | `<N>` | `<%>` |
 | EXTRACT_FAIL | `<N>` | `<%>` |
+| DOWNLOAD_FAIL | `<N>` | `<%>` |
+| PARSER_FAIL | `<N>` | `<%>` |
+| POLICY_DISABLED | `<N>` | `<%>` |
 | TOOL_ERROR | `<N>` | `<%>` |
+| TIMEOUT | `<N>` | `<%>` |
 
 ## Runtime/Cost Metrics
 - Median run duration: `<sec>`
@@ -97,7 +101,7 @@ Period: `<week/month>`
 ```json
 {
   "schema_version": "1.0",
-  "target": {"channel": "intel", "package": "oneccl-cpu", "library": "libccl.so"},
+  "target": {"channel": "conda", "package": "oneccl-cpu", "library": "libccl.so"},
   "summary": {
     "transitions_total": 9,
     "transitions_scanned": 9,
