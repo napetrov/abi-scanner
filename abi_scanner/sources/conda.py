@@ -113,8 +113,7 @@ class CondaSource(PackageSource):
         spec = f"{self.channel}::{package_name}={version}"
         
         try:
-            # Use micromamba download (faster, no env needed)
-            # micromamba download -c <channel> <package>=<version> -p <output_dir>
+            # Preferred path: micromamba download
             cmd = [
                 self.executable,
                 'download',
@@ -122,28 +121,63 @@ class CondaSource(PackageSource):
                 f"{package_name}={version}",
                 '--dest-folder', str(output_dir),
             ]
-            
+
             print(f"Downloading {spec}...")
-            subprocess.run(
-                cmd,
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            # Fallback for older micromamba builds that do not support `download`
+            if "arguments were not expected: download" not in stderr.lower():
+                raise RuntimeError(f"Failed to download {spec}:\n{stderr}")
+
+            mamba_root = output_dir / ".mamba_root"
+            env_dir = output_dir / f".dl_env_{package_name}_{version}"
+            mamba_root.mkdir(parents=True, exist_ok=True)
+
+            fallback_cmd = [
+                self.executable,
+                'create',
+                '-y',
+                '--download-only',
+                '-p', str(env_dir),
+                '-c', self.channel,
+                f"{package_name}={version}",
+            ]
+            fb = subprocess.run(
+                fallback_cmd,
                 capture_output=True,
                 text=True,
-                check=True
+                check=False,
+                env={**__import__('os').environ, 'MAMBA_ROOT_PREFIX': str(mamba_root)}
             )
-            
-            # Find the downloaded file
-            downloaded = list(output_dir.glob(f"{package_name}-{version}*.tar.bz2"))
-            downloaded.extend(output_dir.glob(f"{package_name}-{version}*.conda"))
-            
-            if not downloaded:
-                raise RuntimeError(f"Download succeeded but file not found in {output_dir}")
-            
-            return downloaded[0]
-            
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"Failed to download {spec}:\n{e.stderr}"
-            )
+            if fb.returncode != 0:
+                raise RuntimeError(
+                    f"Failed to download {spec} with fallback create --download-only:\n{(fb.stderr or '').strip()}"
+                )
+
+            # Copy package file from mamba cache into output_dir
+            pkgs_dir = mamba_root / 'pkgs'
+            candidates = list(pkgs_dir.glob(f"{package_name}-{version}*.conda"))
+            candidates.extend(pkgs_dir.glob(f"{package_name}-{version}*.tar.bz2"))
+            if not candidates:
+                raise RuntimeError(
+                    f"Fallback download completed but package file not found in cache: {pkgs_dir}"
+                )
+
+            src = sorted(candidates)[-1]
+            dst = output_dir / src.name
+            if not dst.exists():
+                __import__('shutil').copy2(src, dst)
+
+        # Find the downloaded file
+        downloaded = list(output_dir.glob(f"{package_name}-{version}*.tar.bz2"))
+        downloaded.extend(output_dir.glob(f"{package_name}-{version}*.conda"))
+
+        if not downloaded:
+            raise RuntimeError(f"Download succeeded but file not found in {output_dir}")
+
+        return downloaded[0]
     
     def extract(self, package_file: Path, extract_dir: Path) -> Path:
         """Extract conda package (.tar.bz2 or .conda).
