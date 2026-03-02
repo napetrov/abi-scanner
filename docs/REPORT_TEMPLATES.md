@@ -84,13 +84,10 @@ Period: `<week/month>`
 - Improved products: `<list>`
 - Recurring failure classes: `<skip_code list>`
 
-## Actions
-1. `<action + owner + ETA>`
-2. `<action + owner + ETA>`
-3. `<action + owner + ETA>`
-
-## Decision Ask
-- Approve/hold release windows for: `<product groups>`
+## Recommendations (optional)
+- `<recommended focus area>`
+- `<risk to monitor>`
+- `<suggested follow-up>`
 ```
 
 ---
