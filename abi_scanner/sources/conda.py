@@ -2,11 +2,16 @@
 
 import subprocess
 import json
+import logging
+import os
+import shutil
 from pathlib import Path
 from typing import List
 
 from .base import PackageSource, VersionInfo
 from .utils import safe_extract_tar, safe_extract_zip
+
+logger = logging.getLogger(__name__)
 
 
 class CondaSource(PackageSource):
@@ -106,8 +111,9 @@ class CondaSource(PackageSource):
         existing.extend(output_dir.glob(f"{package_name}-{version}*.conda"))
         
         if existing:
-            print(f"✓ {existing[0].name} already downloaded")
-            return existing[0]
+            newest = max(existing, key=lambda p: p.stat().st_mtime)
+            print(f"✓ {newest.name} already downloaded")
+            return newest
         
         # Search for the package to get exact build string
         spec = f"{self.channel}::{package_name}={version}"
@@ -123,13 +129,17 @@ class CondaSource(PackageSource):
             ]
 
             print(f"Downloading {spec}...")
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+
+        except subprocess.TimeoutExpired as e:
+            logger.error("Timed out while downloading %s via `%s download`", spec, self.executable)
+            raise RuntimeError(f"Timed out while downloading {spec}") from e
 
         except subprocess.CalledProcessError as e:
             stderr = (e.stderr or "").strip()
             # Fallback for older micromamba builds that do not support `download`
             if "arguments were not expected: download" not in stderr.lower():
-                raise RuntimeError(f"Failed to download {spec}:\n{stderr}")
+                raise RuntimeError(f"Failed to download {spec}:\n{stderr}") from e
 
             mamba_root = output_dir / ".mamba_root"
             env_dir = output_dir / f".dl_env_{package_name}_{version}"
@@ -144,17 +154,25 @@ class CondaSource(PackageSource):
                 '-c', self.channel,
                 f"{package_name}={version}",
             ]
-            fb = subprocess.run(
-                fallback_cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-                env={**__import__('os').environ, 'MAMBA_ROOT_PREFIX': str(mamba_root)}
-            )
+            try:
+                fb = subprocess.run(
+                    fallback_cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=300,
+                    env={**os.environ, 'MAMBA_ROOT_PREFIX': str(mamba_root)}
+                )
+            except subprocess.TimeoutExpired as te:
+                logger.error("Timed out while downloading %s via fallback create --download-only", spec)
+                raise RuntimeError(
+                    f"Timed out while downloading {spec} with fallback create --download-only"
+                ) from te
+
             if fb.returncode != 0:
                 raise RuntimeError(
                     f"Failed to download {spec} with fallback create --download-only:\n{(fb.stderr or '').strip()}"
-                )
+                ) from e
 
             # Copy package file from mamba cache into output_dir
             pkgs_dir = mamba_root / 'pkgs'
@@ -163,12 +181,12 @@ class CondaSource(PackageSource):
             if not candidates:
                 raise RuntimeError(
                     f"Fallback download completed but package file not found in cache: {pkgs_dir}"
-                )
+                ) from e
 
-            src = sorted(candidates)[-1]
+            src = max(candidates, key=lambda p: p.stat().st_mtime)
             dst = output_dir / src.name
             if not dst.exists():
-                __import__('shutil').copy2(src, dst)
+                shutil.copy2(src, dst)
 
         # Find the downloaded file
         downloaded = list(output_dir.glob(f"{package_name}-{version}*.tar.bz2"))
@@ -177,7 +195,7 @@ class CondaSource(PackageSource):
         if not downloaded:
             raise RuntimeError(f"Download succeeded but file not found in {output_dir}")
 
-        return downloaded[0]
+        return max(downloaded, key=lambda p: p.stat().st_mtime)
     
     def extract(self, package_file: Path, extract_dir: Path) -> Path:
         """Extract conda package (.tar.bz2 or .conda).
@@ -188,21 +206,42 @@ class CondaSource(PackageSource):
         extract_dir.mkdir(parents=True, exist_ok=True)
         
         if package_file.suffix == '.conda':
-            # New .conda format (zip-based) - extract safely
+            # New .conda format (zip container with nested pkg/info tarballs)
             import zipfile
             with zipfile.ZipFile(package_file) as zf:
                 safe_extract_zip(zf, extract_dir)
-            
-            # Libraries are in pkg/ subdirectory
-            pkg_dir = extract_dir / 'pkg'
-            if pkg_dir.exists():
+
+            # Typical layout: pkg-*.tar.zst + info-*.tar.zst
+            pkg_archives = sorted(extract_dir.glob('pkg-*.tar.*'))
+            info_archives = sorted(extract_dir.glob('info-*.tar.*'))
+
+            def _extract_nested(archive: Path, out_dir: Path):
+                out_dir.mkdir(parents=True, exist_ok=True)
+                # `tar --zstd` handles .tar.zst and also works for regular tar streams.
+                # Fallback to Python tarfile for non-zstd archives.
+                cmd = ['tar', '--extract', '--file', str(archive), '--directory', str(out_dir), '--zstd']
+                run = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                if run.returncode != 0:
+                    import tarfile
+                    with tarfile.open(archive) as tar:
+                        safe_extract_tar(tar, out_dir)
+
+            if pkg_archives:
+                pkg_dir = extract_dir / 'pkg'
+                _extract_nested(pkg_archives[-1], pkg_dir)
                 return pkg_dir
+
+            # Fallback: some producers may still place files directly
+            if info_archives:
+                info_dir = extract_dir / 'info'
+                _extract_nested(info_archives[-1], info_dir)
+            return extract_dir
         else:
             # Old .tar.bz2 format - extract safely
             import tarfile
             with tarfile.open(package_file) as tar:
                 safe_extract_tar(tar, extract_dir)
-        
+
         return extract_dir
     
     def find_libraries(self, extract_dir: Path, package_name: str) -> List[Path]:
