@@ -154,6 +154,8 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
     for pair in sorted_pairs:
         for r in by_version[pair]:
             s = parse_summary(r["summary"])
+            if str(r.get("status","")).startswith("UNKNOWN"):
+                continue
             json_results.append({
                 "version_pair": f"{pair[0]} → {pair[1]}",
                 "library": r["library"],

@@ -50,3 +50,5 @@ venv/
 # Logs
 *.log
 abi_reports/
+final_reports/
+abi_scanner/sources/github.py
