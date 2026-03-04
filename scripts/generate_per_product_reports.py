@@ -23,33 +23,34 @@ PRODUCT_PKG_MAP = {
 }
 
 PRODUCT_DISPLAY = {
-    "onedal": "Intel oneDAL",
-    "oneccl": "Intel oneCCL",
-    "compiler": "Intel DPC++ Compiler Runtime",
-    "mkl": "Intel MKL",
-    "dnnl": "Intel oneDNN",
-    "igc": "Intel Graphics Compiler (IGC)",
-    "level_zero": "Intel Level Zero",
-    "tbb": "Intel oneTBB",
+    "onedal":      "Intel oneDAL",
+    "oneccl":      "Intel oneCCL",
+    "compiler":    "Intel DPC++ Compiler Runtime",
+    "mkl":         "Intel MKL",
+    "dnnl":        "Intel oneDNN",
+    "igc":         "Intel Graphics Compiler (IGC)",
+    "level_zero":  "Intel Level Zero",
+    "tbb":         "Intel oneTBB",
 }
 
 LEGEND = """\
 ## Legend
 
-| Status | Meaning |
-|---|---|
-| ✅ NO_CHANGE | Identical ABI — no differences detected |
-| ℹ️ COMPATIBLE | ABI changed, but backward-compatible (new symbols added; existing callers unaffected) |
-| ❌ BREAKING | Incompatible ABI change — binaries compiled against the old version may fail to link or crash |
-| 🆕 NEW | Library first appeared in this release |
+| Status      | Meaning                                                                                        |
+|-------------|------------------------------------------------------------------------------------------------|
+| ✅ NO_CHANGE | Identical ABI — no differences detected                                                       |
+| ℹ️ COMPATIBLE | ABI changed, but backward-compatible (new symbols added; existing callers unaffected)        |
+| ❌ BREAKING  | Incompatible ABI change — binaries compiled against the old version may fail to link or crash |
+| 🆕 NEW       | Library first appeared in this release                                                        |
 
 **Symbol categories:**
-- **Public** — stable, documented API; callers depend on these directly
-- **Preview** — experimental/preview API (`Exp` suffix, `preview::` namespace); may change between releases
+- **Public**   — stable, documented API; callers depend on these directly
+- **Preview**  — experimental/preview API (`Exp` suffix, `preview::` namespace); may change between releases
 - **Internal** — implementation details (`detail::`, `impl::`, etc.); not part of public contract, but ELF-visible
 
-**Table columns** (per row showing BREAKING/COMPATIBLE):
-`Pub rm` / `Prev rm` / `Int rm` = removed symbols per category; `Changed` = signatures changed; `ELF rm` = ELF-only removals (no DWARF)
+**Table columns:**
+`Pub rm/add` / `Prev rm/add` / `Int rm/add` = removed/added symbols per category;
+`Changed` = function signatures or type layouts changed; `ELF rm` = ELF-only removals (no DWARF info)
 """
 
 
@@ -65,8 +66,11 @@ def strip_build(v: str) -> str:
 
 
 def get_status_emoji(status: str) -> str:
-    return {"NO_CHANGE": "✅ NO_CHANGE", "COMPATIBLE": "ℹ️ COMPATIBLE",
-            "BREAKING": "❌ BREAKING"}.get(status, f"❓ {status}")
+    return {
+        "NO_CHANGE":  "✅ NO_CHANGE",
+        "COMPATIBLE": "ℹ️ COMPATIBLE",
+        "BREAKING":   "❌ BREAKING",
+    }.get(status, f"❓ {status}")
 
 
 def parse_summary(s: str) -> dict:
@@ -93,6 +97,22 @@ def fmt(n: int) -> str:
     return str(n) if n > 0 else "—"
 
 
+def make_table(header: list[str], rows: list[list[str]]) -> list[str]:
+    """Render an aligned markdown table (looks good in raw form too)."""
+    all_rows = [header] + rows
+    widths = [max(len(cell) for cell in col) for col in zip(*all_rows)]
+
+    def pad_row(row, sep="|"):
+        cells = [f" {cell.ljust(w)} " for cell, w in zip(row, widths)]
+        return sep + sep.join(cells) + sep
+
+    separator = "|" + "|".join("-" * (w + 2) for w in widths) + "|"
+    lines = [pad_row(header), separator]
+    for row in rows:
+        lines.append(pad_row(row))
+    return lines
+
+
 def load_library_jsons(product: str, abi_dir: Path) -> dict:
     apt_dir = abi_dir / product / "apt"
     results = {}
@@ -107,14 +127,14 @@ def load_library_jsons(product: str, abi_dir: Path) -> dict:
 
 
 def generate_product_report(product: str, lib_data: dict, scan_date: str, reports_dir: Path):
-    pkg_name = PRODUCT_PKG_MAP.get(product, f"intel-oneapi-{product}")
-    display_name = PRODUCT_DISPLAY.get(product, product.upper())
+    pkg_name      = PRODUCT_PKG_MAP.get(product, f"intel-oneapi-{product}")
+    display_name  = PRODUCT_DISPLAY.get(product, product.upper())
     libraries_scanned = sorted(lib_data.keys())
 
-    all_pairs = set()
-    by_version = defaultdict(list)
-    headers_used = None
-    runtime_pkgs = set()
+    all_pairs      = set()
+    by_version     = defaultdict(list)
+    headers_used   = None
+    runtime_pkgs   = set()
     devel_patterns = set()
 
     for lib_name, data in lib_data.items():
@@ -127,36 +147,36 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
                 continue
             old_v = comp.get("old_version", "?")
             new_v = comp.get("new_version", "?")
-            pair = (old_v, new_v)
+            pair  = (old_v, new_v)
             all_pairs.add(pair)
             if headers_used is None:
                 headers_used = comp.get("headers_used", False)
 
-            syms = comp.get("symbols", {})
+            syms  = comp.get("symbols", {})
             stats = comp.get("stats", {})
             by_version[pair].append({
-                "library":   lib_name,
-                "status":    comp.get("status", "UNKNOWN"),
-                "summary":   comp.get("abidiff_summary", ""),
-                "type_ch":   comp.get("type_changes_count", 0),
-                # Per-category symbol lists
-                "pub_rm":    syms.get("public",   {}).get("removed", []),
-                "pub_add":   syms.get("public",   {}).get("added",   []),
-                "prev_rm":   syms.get("preview",  {}).get("removed", []),
-                "prev_add":  syms.get("preview",  {}).get("added",   []),
-                "int_rm":    syms.get("internal", {}).get("removed", []),
-                "int_add":   syms.get("internal", {}).get("added",   []),
-                # Stats counts (may differ from list lengths due to filtering)
-                "pub_rm_n":  stats.get("public",   {}).get("removed", 0),
-                "pub_add_n": stats.get("public",   {}).get("added",   0),
-                "prev_rm_n": stats.get("preview",  {}).get("removed", 0),
-                "prev_add_n":stats.get("preview",  {}).get("added",   0),
-                "int_rm_n":  stats.get("internal", {}).get("removed", 0),
-                "int_add_n": stats.get("internal", {}).get("added",   0),
+                "library":    lib_name,
+                "status":     comp.get("status", "UNKNOWN"),
+                "summary":    comp.get("abidiff_summary", ""),
+                "type_ch":    comp.get("type_changes_count", 0),
+                # symbol lists (capped at MAX_SYMBOLS_MD for display)
+                "pub_rm":     syms.get("public",   {}).get("removed", []),
+                "pub_add":    syms.get("public",   {}).get("added",   []),
+                "prev_rm":    syms.get("preview",  {}).get("removed", []),
+                "prev_add":   syms.get("preview",  {}).get("added",   []),
+                "int_rm":     syms.get("internal", {}).get("removed", []),
+                "int_add":    syms.get("internal", {}).get("added",   []),
+                # stats counts (scanner-filtered totals)
+                "pub_rm_n":   stats.get("public",   {}).get("removed", 0),
+                "pub_add_n":  stats.get("public",   {}).get("added",   0),
+                "prev_rm_n":  stats.get("preview",  {}).get("removed", 0),
+                "prev_add_n": stats.get("preview",  {}).get("added",   0),
+                "int_rm_n":   stats.get("internal", {}).get("removed", 0),
+                "int_add_n":  stats.get("internal", {}).get("added",   0),
             })
 
     sorted_pairs = sorted(all_pairs, key=lambda p: (ver_key(p[0]), ver_key(p[1])))
-    first_pair = sorted_pairs[0] if sorted_pairs else None
+    first_pair   = sorted_pairs[0] if sorted_pairs else None
     libs_in_first = {r["library"] for r in by_version.get(first_pair, [])} if first_pair else set()
     first_seen: dict = {}
     for pair in sorted_pairs:
@@ -166,7 +186,7 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
     def is_new(lib, pair):
         return lib not in libs_in_first and first_seen.get(lib) == pair
 
-    # JSON output
+    # ── JSON output ──────────────────────────────────────────────────────────
     json_results = []
     for pair in sorted_pairs:
         for r in by_version[pair]:
@@ -176,8 +196,8 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
             new_flag = is_new(r["library"], pair)
             json_results.append({
                 "version_pair": f"{pair[0]} → {pair[1]}",
-                "library": r["library"],
-                "status": "NEW" if new_flag else r["status"],
+                "library":      r["library"],
+                "status":       "NEW" if new_flag else r["status"],
                 "symbols": {
                     "public":   {"removed": r["pub_rm"],  "added": r["pub_add"]},
                     "preview":  {"removed": r["prev_rm"], "added": r["prev_add"]},
@@ -188,21 +208,24 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
                     "preview":  {"removed": r["prev_rm_n"], "added": r["prev_add_n"]},
                     "internal": {"removed": r["int_rm_n"],  "added": r["int_add_n"]},
                 },
-                "fn_changed":    s["fn_ch"],
-                "elf_fn_removed": s["elf_fn_rm"],
+                "fn_changed":      s["fn_ch"],
+                "elf_fn_removed":  s["elf_fn_rm"],
                 "elf_var_removed": s["elf_var_rm"],
             })
 
     json_out = {
         "product": product, "channel_url": CHANNEL_URL, "package": pkg_name,
-        "runtime_packages": sorted(runtime_pkgs), "devel_packages": sorted(devel_patterns),
-        "libraries_scanned": libraries_scanned, "headers_used": headers_used,
-        "scan_date": scan_date, "results": json_results,
+        "runtime_packages":  sorted(runtime_pkgs),
+        "devel_packages":    sorted(devel_patterns),
+        "libraries_scanned": libraries_scanned,
+        "headers_used": headers_used,
+        "scan_date":    scan_date,
+        "results":      json_results,
     }
     with open(reports_dir / f"{product}_apt_full.json", "w") as f:
         json.dump(json_out, f, indent=2)
 
-    # MD output
+    # ── Markdown output ───────────────────────────────────────────────────────
     md = []
     md.append(f"# {display_name} ABI Compatibility Report\n")
     md.append(f"**Channel:** {CHANNEL_URL}  ")
@@ -219,46 +242,63 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
     md.append("## Summary\n")
 
     breaking_entries = []
+    TABLE_HEADER = ["Library", "Status",
+                    "Pub rm", "Pub add",
+                    "Prev rm", "Prev add",
+                    "Int rm", "Int add",
+                    "Changed", "ELF rm"]
+    NEW_ROW_TEMPLATE = ["—"] * 8  # placeholder cells for non-status cols
 
     for i, pair in enumerate(sorted_pairs):
         old_v, new_v = pair
         rows = sorted(by_version[pair], key=lambda x: x["library"])
         md.append(f"### {strip_build(old_v)} → {strip_build(new_v)}\n")
-        md.append("| Library | Status | Pub rm | Prev rm | Int rm | Changed | ELF rm |")
-        md.append("|---|---|---|---|---|---|---|")
 
+        table_rows = []
         for r in rows:
             if str(r["status"]).startswith("UNKNOWN"):
                 continue
             new_flag = is_new(r["library"], pair)
             if new_flag:
-                md.append(f"| {r['library']} | 🆕 NEW | — | — | — | — | — |")
+                table_rows.append([r["library"], "🆕 NEW"] + NEW_ROW_TEMPLATE)
                 continue
 
             s = parse_summary(r["summary"])
-            elf_rm = s["elf_fn_rm"] + s["elf_var_rm"]
+            elf_rm   = s["elf_fn_rm"] + s["elf_var_rm"]
             total_ch = s["fn_ch"] + s["var_ch"] + r["type_ch"]
 
-            # Use stats counts (scanner-filtered); fall back to list length
+            # Counts: prefer stats, fall back to list length
             pub_rm  = r["pub_rm_n"]  or len(r["pub_rm"])
+            pub_add = r["pub_add_n"] or len(r["pub_add"])
             prev_rm = r["prev_rm_n"] or len(r["prev_rm"])
+            prev_add= r["prev_add_n"]or len(r["prev_add"])
             int_rm  = r["int_rm_n"]  or len(r["int_rm"])
-            # For removed counts, also use abidiff summary total if higher
+            int_add = r["int_add_n"] or len(r["int_add"])
+
+            # Conservative: if abidiff total_rm > categorised sum, attribute to public
             abidiff_total_rm = s["fn_rm"] + s["var_rm"]
             if abidiff_total_rm > pub_rm + prev_rm + int_rm:
-                pub_rm = abidiff_total_rm  # conservative: attribute to public
+                pub_rm = abidiff_total_rm
 
-            md.append(f"| {r['library']} | {get_status_emoji(r['status'])} "
-                      f"| {fmt(pub_rm)} | {fmt(prev_rm)} | {fmt(int_rm)} "
-                      f"| {fmt(total_ch)} | {fmt(elf_rm)} |")
+            table_rows.append([
+                r["library"],
+                get_status_emoji(r["status"]),
+                fmt(pub_rm),  fmt(pub_add),
+                fmt(prev_rm), fmt(prev_add),
+                fmt(int_rm),  fmt(int_add),
+                fmt(total_ch),
+                fmt(elf_rm),
+            ])
 
             if r["status"] == "BREAKING":
                 breaking_entries.append((strip_build(old_v), strip_build(new_v), r, s))
 
+        md += make_table(TABLE_HEADER, table_rows)
+
         if i < len(sorted_pairs) - 1:
             md += ["", "---", ""]
 
-    # Breaking Changes section
+    # ── Breaking Changes section ──────────────────────────────────────────────
     if breaking_entries:
         md += ["", "## Breaking Changes", ""]
         current = None
@@ -272,18 +312,20 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
 
             md += [f"#### `{r['library']}`", ""]
 
-            # Why BREAKING explanation
-            reasons = []
             pub_rm  = r["pub_rm_n"]  or len(r["pub_rm"])
+            pub_add = r["pub_add_n"] or len(r["pub_add"])
             prev_rm = r["prev_rm_n"] or len(r["prev_rm"])
+            prev_add= r["prev_add_n"]or len(r["prev_add"])
             int_rm  = r["int_rm_n"]  or len(r["int_rm"])
+            int_add = r["int_add_n"] or len(r["int_add"])
             total_ch = s["fn_ch"] + s["var_ch"] + r["type_ch"]
-            elf_rm = s["elf_fn_rm"] + s["elf_var_rm"]
+            elf_rm   = s["elf_fn_rm"] + s["elf_var_rm"]
 
+            reasons = []
             if pub_rm:
                 reasons.append(f"**{pub_rm} public symbol(s) removed** — callers will get link errors")
             if prev_rm:
-                reasons.append(f"**{prev_rm} preview/experimental symbol(s) removed** — preview API changed")
+                reasons.append(f"**{prev_rm} preview symbol(s) removed** — experimental API changed")
             if int_rm:
                 reasons.append(f"**{int_rm} internal symbol(s) removed** — ELF-visible but not public contract")
             if total_ch:
@@ -291,8 +333,8 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
             if elf_rm:
                 reasons.append(f"**{elf_rm} ELF-only symbol(s) removed** (no DWARF) — linker-visible ABI break")
             if not reasons:
-                reasons.append("abidiff returned BREAKING (exit 12); all counters are zero — "
-                                "may indicate vtable/linker script changes not captured in DWARF")
+                reasons.append("abidiff returned BREAKING (exit 12); counters are zero — "
+                                "may indicate vtable or linker-script changes not captured in DWARF")
 
             md.append("**Why BREAKING:**")
             for reason in reasons:
@@ -303,38 +345,39 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
                 md += ["<details><summary>Full abidiff output</summary>", "",
                        "```", r["summary"].strip(), "```", "</details>", ""]
 
-            # Symbol lists split by category
-            for cat_key, cat_label, rm_list, rm_n, add_list, add_n, is_breaking_cat in [
-                ("pub",  "🔴 Public",   r["pub_rm"],  r["pub_rm_n"],  r["pub_add"],  r["pub_add_n"],  True),
-                ("prev", "🟡 Preview",  r["prev_rm"], r["prev_rm_n"], r["prev_add"], r["prev_add_n"], False),
-                ("int",  "⚪ Internal", r["int_rm"],  r["int_rm_n"],  r["int_add"],  r["int_add_n"],  False),
+            # Per-category symbol blocks
+            for cat_label, rm_list, rm_n, add_list, add_n in [
+                ("🔴 Public",   r["pub_rm"],  pub_rm,  r["pub_add"],  pub_add),
+                ("🟡 Preview",  r["prev_rm"], prev_rm, r["prev_add"], prev_add),
+                ("⚪ Internal", r["int_rm"],  int_rm,  r["int_add"],  int_add),
             ]:
-                if rm_list or add_list:
-                    md.append(f"**{cat_label} API changes:**")
-                    if rm_list:
-                        shown = rm_list[:MAX_SYMBOLS_MD]
-                        extra = max(0, (rm_n or len(rm_list)) - len(shown))
-                        md += [f"<details><summary>Removed ({rm_n or len(rm_list)})</summary>", "",
-                               "```cpp"] + shown + ["```"]
-                        if extra:
-                            md.append(f"*...and {extra} more — see JSON*")
-                        md += ["</details>", ""]
-                    if add_list:
-                        shown = add_list[:MAX_SYMBOLS_MD]
-                        extra = max(0, (add_n or len(add_list)) - len(shown))
-                        md += [f"<details><summary>Added ({add_n or len(add_list)})</summary>", "",
-                               "```cpp"] + shown + ["```"]
-                        if extra:
-                            md.append(f"*...and {extra} more — see JSON*")
-                        md += ["</details>", ""]
+                if not rm_list and not add_list:
+                    continue
+                md.append(f"**{cat_label} API changes:**")
+                if rm_list:
+                    shown = rm_list[:MAX_SYMBOLS_MD]
+                    extra = max(0, rm_n - len(shown))
+                    md += [f"<details><summary>Removed ({rm_n})</summary>", "",
+                           "```cpp"] + shown + ["```"]
+                    if extra:
+                        md.append(f"*...and {extra} more — see JSON*")
+                    md += ["</details>", ""]
+                if add_list:
+                    shown = add_list[:MAX_SYMBOLS_MD]
+                    extra = max(0, add_n - len(shown))
+                    md += [f"<details><summary>Added ({add_n})</summary>", "",
+                           "```cpp"] + shown + ["```"]
+                    if extra:
+                        md.append(f"*...and {extra} more — see JSON*")
+                    md += ["</details>", ""]
 
     with open(reports_dir / f"{product}_apt.md", "w") as f:
         f.write("\n".join(md) + "\n")
 
 
 def main():
-    repo_root = Path(__file__).parent.parent
-    abi_dir = repo_root / "abi_reports"
+    repo_root   = Path(__file__).parent.parent
+    abi_dir     = repo_root / "abi_reports"
     reports_dir = repo_root / "reports"
     reports_dir.mkdir(exist_ok=True)
     scan_date = date.today().isoformat()
