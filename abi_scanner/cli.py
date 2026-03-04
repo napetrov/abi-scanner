@@ -297,14 +297,23 @@ def cmd_compare(args):
             old_abi = tmp / "old.abi"
             new_abi = tmp / "new.abi"
 
-            old_headers = getattr(old_lib, "_headers_dir", None)
-            new_headers = getattr(new_lib, "_headers_dir", None)
-            _ok_old, _reason_old = _generate_baseline(old_lib, old_abi, args.verbose,
+            # _download_and_prepare returns dict[base_name -> Path]; extract first lib
+            if not old_lib:
+                print(f"Error: no library found for {old_spec}", file=sys.stderr)
+                return 1
+            if not new_lib:
+                print(f"Error: no library found for {new_spec}", file=sys.stderr)
+                return 1
+            old_so = next(iter(old_lib.values()))
+            new_so = next(iter(new_lib.values()))
+            old_headers = getattr(old_so, "_headers_dir", None)
+            new_headers = getattr(new_so, "_headers_dir", None)
+            _ok_old, _reason_old = _generate_baseline(old_so, old_abi, args.verbose,
                                                        headers_dir=old_headers)
-            old_baseline = old_abi if _ok_old else old_lib
-            _ok_new, _reason_new = _generate_baseline(new_lib, new_abi, args.verbose,
+            old_baseline = old_abi if _ok_old else old_so
+            _ok_new, _reason_new = _generate_baseline(new_so, new_abi, args.verbose,
                                                        headers_dir=new_headers)
-            new_baseline = new_abi if _ok_new else new_lib
+            new_baseline = new_abi if _ok_new else new_so
 
             # Compare (nm-D fallback when abidw fails for either side)
             analyzer = ABIAnalyzer(suppressions=suppressions,
