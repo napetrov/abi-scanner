@@ -36,12 +36,17 @@ PRODUCT_DISPLAY = {
 LEGEND = """\
 ## Legend
 
-| Status      | Meaning                                                                                        |
-|-------------|------------------------------------------------------------------------------------------------|
-| ✅ NO_CHANGE | Identical ABI — no differences detected                                                       |
-| ℹ️ COMPATIBLE | ABI changed, but backward-compatible (new symbols added; existing callers unaffected)        |
-| ❌ BREAKING  | Incompatible ABI change — binaries compiled against the old version may fail to link or crash |
-| 🆕 NEW       | Library first appeared in this release                                                        |
+| Status              | Meaning                                                                                          |
+|---------------------|--------------------------------------------------------------------------------------------------|
+| ✅ NO_CHANGE         | Identical ABI — no differences detected                                                         |
+| ℹ️ COMPATIBLE        | ABI changed, but backward-compatible (new symbols added; existing callers unaffected)           |
+| ⚠️ PREVIEW_BREAKING  | Only preview/experimental API removed — stable public API is intact                             |
+| ❌ BREAKING          | Public API removed or signatures changed — binaries may fail to link or crash at runtime        |
+| 🆕 NEW               | Library first appeared in this release                                                          |
+
+> **Note on status:** The raw `abidiff` exit code treats *any* removed symbol as BREAKING.
+> This report overrides that: if only internal or preview symbols were removed and public API is
+> intact, the effective status is downgraded to ℹ️ COMPATIBLE or ⚠️ PREVIEW_BREAKING respectively.
 
 **Symbol categories:**
 - **Public**   — stable, documented API; callers depend on these directly
@@ -67,10 +72,29 @@ def strip_build(v: str) -> str:
 
 def get_status_emoji(status: str) -> str:
     return {
-        "NO_CHANGE":  "✅ NO_CHANGE",
-        "COMPATIBLE": "ℹ️ COMPATIBLE",
-        "BREAKING":   "❌ BREAKING",
+        "NO_CHANGE":        "✅ NO_CHANGE",
+        "COMPATIBLE":       "ℹ️ COMPATIBLE",
+        "PREVIEW_BREAKING": "⚠️ PREVIEW_BREAKING",
+        "BREAKING":         "❌ BREAKING",
     }.get(status, f"❓ {status}")
+
+
+def effective_status(scanner_status: str, pub_rm: int, prev_rm: int, total_changed: int) -> str:
+    """Override abidiff BREAKING status based on which symbol categories were actually removed.
+
+    Rules:
+    - pub_rm > 0 or total_changed > 0  → BREAKING  (public API removed or signatures changed)
+    - pub_rm == 0, prev_rm > 0         → PREVIEW_BREAKING  (only preview removed)
+    - pub_rm == 0, prev_rm == 0        → COMPATIBLE  (only internal removed — not public contract)
+    - scanner not BREAKING             → keep as-is
+    """
+    if scanner_status != "BREAKING":
+        return scanner_status
+    if pub_rm > 0 or total_changed > 0:
+        return "BREAKING"
+    if prev_rm > 0:
+        return "PREVIEW_BREAKING"
+    return "COMPATIBLE"
 
 
 def parse_summary(s: str) -> dict:
@@ -194,10 +218,15 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
                 continue
             s = parse_summary(r["summary"])
             new_flag = is_new(r["library"], pair)
+            _pub_rm  = r["pub_rm_n"]  or len(r["pub_rm"])
+            _prev_rm = r["prev_rm_n"] or len(r["prev_rm"])
+            _total_ch = s["fn_ch"] + s["var_ch"] + r["type_ch"]
+            _eff = "NEW" if new_flag else effective_status(r["status"], _pub_rm, _prev_rm, _total_ch)
             json_results.append({
                 "version_pair": f"{pair[0]} → {pair[1]}",
                 "library":      r["library"],
-                "status":       "NEW" if new_flag else r["status"],
+                "status":       _eff,
+                "scanner_status": r["status"],
                 "symbols": {
                     "public":   {"removed": r["pub_rm"],  "added": r["pub_add"]},
                     "preview":  {"removed": r["prev_rm"], "added": r["prev_add"]},
@@ -280,9 +309,11 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
             if abidiff_total_rm > pub_rm + prev_rm + int_rm:
                 pub_rm = abidiff_total_rm
 
+            eff_status = effective_status(r["status"], pub_rm, prev_rm, total_ch)
+
             table_rows.append([
                 r["library"],
-                get_status_emoji(r["status"]),
+                get_status_emoji(eff_status),
                 fmt(pub_rm),  fmt(pub_add),
                 fmt(prev_rm), fmt(prev_add),
                 fmt(int_rm),  fmt(int_add),
@@ -290,8 +321,8 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
                 fmt(elf_rm),
             ])
 
-            if r["status"] == "BREAKING":
-                breaking_entries.append((strip_build(old_v), strip_build(new_v), r, s))
+            if eff_status in ("BREAKING", "PREVIEW_BREAKING"):
+                breaking_entries.append((strip_build(old_v), strip_build(new_v), r, s, eff_status))
 
         md += make_table(TABLE_HEADER, table_rows)
 
@@ -302,7 +333,7 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
     if breaking_entries:
         md += ["", "## Breaking Changes", ""]
         current = None
-        for old_s, new_s, r, s in breaking_entries:
+        for old_s, new_s, r, s, eff_status in breaking_entries:
             label = f"{old_s} → {new_s}"
             if label != current:
                 if current is not None:
@@ -310,7 +341,8 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
                 md += [f"### {label}", ""]
                 current = label
 
-            md += [f"#### `{r['library']}`", ""]
+            status_badge = get_status_emoji(eff_status)
+            md += [f"#### `{r['library']}` — {status_badge}", ""]
 
             pub_rm  = r["pub_rm_n"]  or len(r["pub_rm"])
             pub_add = r["pub_add_n"] or len(r["pub_add"])
@@ -326,14 +358,18 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
                 reasons.append(f"**{pub_rm} public symbol(s) removed** — callers will get link errors")
             if prev_rm:
                 reasons.append(f"**{prev_rm} preview symbol(s) removed** — experimental API changed")
-            if int_rm:
+            if int_rm and eff_status == "PREVIEW_BREAKING":
+                reasons.append(f"**{int_rm} internal symbol(s) removed** — ELF-visible but not public contract")
+            elif int_rm and eff_status == "COMPATIBLE":
+                pass  # only internal — don't alarm
+            elif int_rm:
                 reasons.append(f"**{int_rm} internal symbol(s) removed** — ELF-visible but not public contract")
             if total_ch:
                 reasons.append(f"**{total_ch} function/type(s) changed** — signature or layout modified")
             if elf_rm:
                 reasons.append(f"**{elf_rm} ELF-only symbol(s) removed** (no DWARF) — linker-visible ABI break")
             if not reasons:
-                reasons.append("abidiff returned BREAKING (exit 12); counters are zero — "
+                reasons.append("abidiff exit 12; all public counters are zero — "
                                 "may indicate vtable or linker-script changes not captured in DWARF")
 
             md.append("**Why BREAKING:**")
