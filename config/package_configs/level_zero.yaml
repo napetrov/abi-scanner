@@ -1,0 +1,18 @@
+library: level_zero
+primary_lib: libze_loader.so.1
+libraries:
+- libze_loader.so.1
+- libze_tracing_layer.so.1
+- libze_validation_layer.so.1
+sources:
+  apt:
+    base_url: https://repositories.intel.com/gpu/ubuntu
+    apt_packages_url: file:///var/lib/apt/lists/repositories.intel.com_gpu_ubuntu_dists_jammy_client_binary-amd64_Packages
+    pkg_pattern: ^level-zero$
+    paths:
+      lib: usr/lib/x86_64-linux-gnu
+public_namespaces: []
+private_patterns:
+  symbol:
+  - ^_.*
+  - ^__.*

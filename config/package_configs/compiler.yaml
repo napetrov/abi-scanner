@@ -4,6 +4,17 @@
 library: compiler
 primary_lib: libsycl.so
 
+# All libraries to scan for ABI compatibility
+libraries:
+  - libsycl.so.8.0.0
+  - libsycl-preview.so.8.0.0
+  - libsycl-jit.so
+  - libpstloffload.so.1.0.0
+  - libur_loader.so.0.12.0
+  - libur_adapter_level_zero.so.0.12.0
+  - libur_adapter_level_zero_v2.so.0.12.0
+  - libur_adapter_opencl.so.0.12.0
+
 sources:
   apt:
     base_url: https://apt.repos.intel.com/oneapi

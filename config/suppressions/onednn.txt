@@ -1,0 +1,13 @@
+[suppress_function]
+name_regexp = ^dnnl::impl::.*
+name_regexp = ^dnnl::backend::.*
+name_regexp = ^oneapi::dnnl::.*::detail::.*
+symbol_name_regexp = ^dnnl_.*
+symbol_name_regexp = ^__intel_.*
+symbol_name_regexp = ^_GLOBAL__.*
+symbol_name_regexp = ^__.+
+
+[suppress_variable]
+name_regexp = ^dnnl::impl::.*
+symbol_name_regexp = ^_ZTV.*dnnl.*
+symbol_name_regexp = ^_ZTI.*dnnl.*

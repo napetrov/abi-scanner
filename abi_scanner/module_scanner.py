@@ -60,15 +60,27 @@ def iter_abidiff_symbols(stdout: str) -> Iterable[Tuple[str, str]]:
     current_section = None
     for line in stdout.splitlines():
         s = line.strip()
-        if "Removed function symbols" in s:
+        # Match ELF-level: "Removed/Added function symbols"
+        # Match DWARF-level: "N Removed functions:" / "N Added functions:"
+        if "Removed function symbols" in s or "Removed variable symbols" in s \
+                or ("Removed function" in s and s.endswith("functions:")) \
+                or ("Removed variable" in s and s.endswith("variables:")):
             current_section = "removed"
-        elif "Added function symbols" in s:
+        elif "Added function symbols" in s or "Added variable symbols" in s \
+                or ("Added function" in s and s.endswith("functions:")) \
+                or ("Added variable" in s and s.endswith("variables:")):
             current_section = "added"
-        elif s.endswith("symbols:") and "function symbols" not in s:
+        elif "Changed function" in s or "Changed variable" in s:
+            current_section = "changed"
+        elif s.endswith("symbols:") and "function symbols" not in s \
+                and "variable symbols" not in s:
             current_section = None
-        elif (s.startswith("[D]") or s.startswith("[A]")) and current_section:
+        elif (s.startswith("[D]") or s.startswith("[A]") or s.startswith("[C]")) \
+                and current_section:
             parts = s.split(maxsplit=1)
             symbol = parts[1] if len(parts) > 1 else ""
+            # Strip trailing mangled form e.g. {_ZNxxx}
+            symbol = symbol.split("{")[0].strip().strip("'").strip()
             yield current_section, symbol
 
 

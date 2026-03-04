@@ -1,0 +1,18 @@
+library: igc
+primary_lib: libigc.so.1
+libraries:
+- libigc.so.1
+- libiga64.so.1
+sources:
+  apt:
+    base_url: https://repositories.intel.com/gpu/ubuntu
+    apt_packages_url: file:///var/lib/apt/lists/repositories.intel.com_gpu_ubuntu_dists_jammy_client_binary-amd64_Packages
+    pkg_pattern: ^libigc1$
+    paths:
+      lib: usr/lib/x86_64-linux-gnu
+public_namespaces: []
+private_patterns:
+  symbol:
+  - ^_.*
+  - ^__.*
+  - ^igc::.*

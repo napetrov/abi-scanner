@@ -297,23 +297,14 @@ def cmd_compare(args):
             old_abi = tmp / "old.abi"
             new_abi = tmp / "new.abi"
 
-            # _download_and_prepare returns dict[base_name -> Path]; extract first lib
-            if not old_lib:
-                print(f"Error: no library found for {old_spec}", file=sys.stderr)
-                return 1
-            if not new_lib:
-                print(f"Error: no library found for {new_spec}", file=sys.stderr)
-                return 1
-            old_so = next(iter(old_lib.values()))
-            new_so = next(iter(new_lib.values()))
-            old_headers = getattr(old_so, "_headers_dir", None)
-            new_headers = getattr(new_so, "_headers_dir", None)
-            _ok_old, _reason_old = _generate_baseline(old_so, old_abi, args.verbose,
+            old_headers = getattr(old_lib, "_headers_dir", None)
+            new_headers = getattr(new_lib, "_headers_dir", None)
+            _ok_old, _reason_old = _generate_baseline(old_lib, old_abi, args.verbose,
                                                        headers_dir=old_headers)
-            old_baseline = old_abi if _ok_old else old_so
-            _ok_new, _reason_new = _generate_baseline(new_so, new_abi, args.verbose,
+            old_baseline = old_abi if _ok_old else old_lib
+            _ok_new, _reason_new = _generate_baseline(new_lib, new_abi, args.verbose,
                                                        headers_dir=new_headers)
-            new_baseline = new_abi if _ok_new else new_so
+            new_baseline = new_abi if _ok_new else new_lib
 
             # Compare (nm-D fallback when abidw fails for either side)
             analyzer = ABIAnalyzer(suppressions=suppressions,
@@ -474,10 +465,9 @@ def cmd_compatible(args):
             print(f"Error: {_reason}", file=sys.stderr)
             return 1
 
-        _track_exp = getattr(args, "track_experimental", False)
         analyzer = ABIAnalyzer(suppressions=suppressions,
                              suppress_stdlib=getattr(args, "suppress_stdlib", False),
-                             track_experimental=_track_exp)
+                             track_experimental=getattr(args, "track_experimental", False))
         api_filter = PublicAPIFilter()
 
         for idx, ver in enumerate(candidates):
@@ -863,10 +853,9 @@ def cmd_validate(args):
 
     with tempfile.TemporaryDirectory(prefix="abi_scanner_val_") as tmpdir:
         tmp = Path(tmpdir)
-        _track_exp = getattr(args, "track_experimental", False)
         analyzer = ABIAnalyzer(suppressions=suppressions,
                              suppress_stdlib=getattr(args, "suppress_stdlib", False),
-                             track_experimental=_track_exp)
+                             track_experimental=getattr(args, "track_experimental", False))
         api_filter = PublicAPIFilter()
 
         # Cache baselines: (pkg_name, ver_str) → Path|None  (avoids aliasing when

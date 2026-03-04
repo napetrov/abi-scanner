@@ -1,0 +1,29 @@
+# config/package_configs/mkl.yaml
+# Runtime package: intel-oneapi-mkl-core-2025.x (not the meta-package intel-oneapi-mkl-2025.x)
+
+library: mkl
+primary_lib: libmkl_core.so.2
+
+libraries:
+  - libmkl_core.so.2
+  - libmkl_intel_lp64.so.2
+  - libmkl_intel_ilp64.so.2
+  - libmkl_sequential.so.2
+  - libmkl_tbb_thread.so.2
+  - libmkl_intel_thread.so.2
+  - libmkl_gnu_thread.so.2
+  - libmkl_rt.so.2
+
+sources:
+  apt:
+    base_url: https://apt.repos.intel.com/oneapi
+    pkg_pattern: '^intel-oneapi-mkl-core-2025\.\d+$'
+    paths:
+      lib: opt/intel/oneapi/mkl/{version}/lib
+
+public_namespaces: []
+
+private_patterns:
+  symbol:
+    - '^_.*'
+    - '^mkl_.*'

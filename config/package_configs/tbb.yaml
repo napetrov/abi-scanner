@@ -1,0 +1,29 @@
+# config/package_configs/tbb.yaml
+# Intel oneAPI TBB (Threading Building Blocks)
+library: tbb
+primary_lib: libtbb.so.12
+
+libraries:
+  - libtbb.so.12
+  - libtbbmalloc.so.2
+  - libtbbmalloc_proxy.so.2
+  - libtbbbind.so.3
+  - libtbbbind_2_0.so.3
+  - libtbbbind_2_5.so.3
+
+sources:
+  apt:
+    base_url: https://apt.repos.intel.com/oneapi
+    pkg_pattern: '^intel-oneapi-tbb-2022\.\d+$'
+    paths:
+      lib: opt/intel/oneapi/tbb/{version}/lib
+
+public_namespaces:
+  - tbb
+  - oneapi::tbb
+
+private_patterns:
+  symbol:
+    - '^_.*'
+    - '^__.*'
+    - '^__TBB.*'
