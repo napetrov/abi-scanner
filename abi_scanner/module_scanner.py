@@ -62,11 +62,11 @@ def iter_abidiff_symbols(stdout: str) -> Iterable[Tuple[str, str]]:
         s = line.strip()
         # Match ELF-level: "Removed/Added function symbols"
         # Match DWARF-level: "N Removed functions:" / "N Added functions:"
-        if "Removed function symbols" in s or "Removed variable symbols" in s \
+        if "Removed function symbol" in s or "Removed variable symbol" in s \
                 or ("Removed function" in s and s.endswith("functions:")) \
                 or ("Removed variable" in s and s.endswith("variables:")):
             current_section = "removed"
-        elif "Added function symbols" in s or "Added variable symbols" in s \
+        elif "Added function symbol" in s or "Added variable symbol" in s \
                 or ("Added function" in s and s.endswith("functions:")) \
                 or ("Added variable" in s and s.endswith("variables:")):
             current_section = "added"
