@@ -517,39 +517,36 @@ class ABIAnalyzer:
             if self.track_experimental:
                 from .module_scanner import SymbolClassifier
                 classifier = SymbolClassifier()
-                
-                # Precompute demangled names for fast lookup
-                added_demangled = {
-                    demangle_symbol(s) if s.startswith("_Z") else s
-                    for s in comparison.public_added
-                }
-                
-                # Single-pass filter
-                new_removals = []
-                for rem in effective_removals:
-                    # Ignore preview/experimental
+                for rem in list(effective_removals):
+                    # Ignore removals of preview/experimental APIs
                     if classifier.classify(rem) == "preview":
+                        effective_removals.remove(rem)
                         continue
-                    
-                    # Ignore promotions
-                    rem_demangled = demangle_symbol(rem) if rem.startswith("_Z") else rem
-                    if rem_demangled.endswith("Exp"):
-                        stable_name = rem_demangled[:-3]
-                        if stable_name in added_demangled:
-                            continue
-                    
-                    new_removals.append(rem)
-                effective_removals = new_removals
+                        
+                    # Ignore if it's a promotion (zeXxxExp -> zeXxx)
+                    if rem.endswith("Exp"):
+                        stable_name = rem[:-3]
+                        if stable_name in comparison.public_added:
+                            effective_removals.remove(rem)
 
             removed_count = len(effective_removals)
             added_count = len(comparison.public_added)
             
-            # When suppress_stdlib is False, we use raw abidiff counts and compute
-            # unparsed_removals as the portion of raw_removals not represented in
-            # comparison.public_removed. We intentionally add unparsed_removals = max(0, raw_removals - len(comparison.public_removed))
-            # to removed_count to account for those unparsed removals.
+            # If suppress_stdlib is False, we shouldn't suppress ANY internal removals, 
+            # so we must rely on the raw abidiff counters for internals minus the ignored previews.
+            # For simplicity, if we have 0 effective_removals, we only downgrade if
+            # either suppress_stdlib=True OR the raw removed count is exactly equal to the number of preview symbols we just ignored.
+            
+            # To keep it robust, we calculate how many symbols were ignored:
+            ignored_count = len(comparison.public_removed) - removed_count
+            
+            # Total actual removals we care about:
             if not self.suppress_stdlib:
                 raw_removals = (comparison.functions_removed or 0) + (comparison.variables_removed or 0)
+                # raw_removals includes BOTH internal and public. 
+                # Our public_removed list ONLY includes non-suppressed symbols, so if we're not suppressing stdlib,
+                # public_removed actually contains *everything*. So the raw count isn't needed.
+                # However, if there are removals we didn't parse, we must count them.
                 unparsed_removals = max(0, raw_removals - len(comparison.public_removed))
                 removed_count += unparsed_removals
             
@@ -636,13 +633,17 @@ class ABIAnalyzer:
         
         for line in lines:
             # Detect section headers (including "not referenced by debug info" variants)
-            if ("Removed function symbols" in line or "Removed variable symbols" in line):
+            # Match both DWARF-visible ("N Removed functions:") and ELF ("Removed function symbols")
+            if ("Removed function symbols" in line or "Removed variable symbols" in line
+                    or "Removed functions:" in line or "Removed variables:" in line):
                 current_section = "removed"
                 continue
-            elif ("Added function symbols" in line or "Added variable symbols" in line):
+            elif ("Added function symbols" in line or "Added variable symbols" in line
+                    or "Added functions:" in line or "Added variables:" in line):
                 current_section = "added"
                 continue
-            elif ("Changed function symbols" in line or "Changed variable symbols" in line):
+            elif ("Changed function symbols" in line or "Changed variable symbols" in line
+                    or "Changed functions:" in line or "Changed variables:" in line):
                 current_section = "changed"
                 continue
             

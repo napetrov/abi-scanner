@@ -1,0 +1,6 @@
+[suppress_function]
+symbol_name_regexp = ^__.+
+symbol_name_regexp = ^_GLOBAL__.*
+
+[suppress_variable]
+symbol_name_regexp = ^__.+

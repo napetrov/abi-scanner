@@ -1,0 +1,16 @@
+# config/suppressions/mkl.txt
+# MKL is a C API — no namespaces; suppress only compiler-generated symbols
+
+[suppress_function]
+# Compiler-generated / internal symbols
+symbol_name_regexp = ^__intel_.*
+symbol_name_regexp = ^_GLOBAL__.*
+symbol_name_regexp = ^__.+
+
+# Old-style MKL Fortran wrappers
+symbol_name_regexp = ^(XERBLA|xerbla|LSAME|lsame|ILAENV|ilaenv).*
+
+[suppress_variable]
+symbol_name_regexp = ^__intel_.*
+symbol_name_regexp = ^_GLOBAL__.*
+symbol_name_regexp = ^__.+

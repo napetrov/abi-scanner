@@ -1,0 +1,24 @@
+# config/package_configs/dnnl.yaml
+# Intel oneDNN (Deep Neural Network Library)
+library: dnnl
+primary_lib: libdnnl.so.3
+
+libraries:
+  - libdnnl.so.3
+
+sources:
+  apt:
+    base_url: https://apt.repos.intel.com/oneapi
+    pkg_pattern: '^intel-oneapi-dnnl-2025\.\d+$'
+    paths:
+      lib: opt/intel/oneapi/dnnl/{version}/lib
+
+public_namespaces:
+  - dnnl
+  - oneapi::dnnl
+
+private_patterns:
+  symbol:
+    - '^_.*'
+    - '^__.*'
+    - '^dnnl_impl_.*'

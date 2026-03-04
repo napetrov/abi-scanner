@@ -1,0 +1,14 @@
+[suppress_function]
+name_regexp = ^tbb::detail::.*
+name_regexp = ^tbb::internal::.*
+symbol_name_regexp = ^__TBB_.*
+symbol_name_regexp = ^_ZN3tbb6detail.*
+symbol_name_regexp = ^_GLOBAL__.*
+symbol_name_regexp = ^__.+
+
+[suppress_variable]
+name_regexp = ^tbb::detail::.*
+symbol_name_regexp = ^_ZN3tbb6detail.*
+symbol_name_regexp = ^_ZTV.*tbb.*
+symbol_name_regexp = ^_ZTI.*tbb.*
+symbol_name_regexp = ^_ZTS.*tbb.*

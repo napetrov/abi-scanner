@@ -4,19 +4,17 @@
 library: oneccl
 primary_lib: libccl.so
 
+# All libraries to scan for ABI compatibility
+libraries:
+  - libccl.so
+  - libccl_openmp.so
+
 sources:
-  intel:
-    channel: https://software.repos.intel.com/python/conda
-    packages:
-      runtime:
-        name: oneccl-cpu
-        contains: [lib]
-      devel:
-        name: oneccl-devel
-        contains: [include]
+  apt:
+    base_url: https://apt.repos.intel.com/oneapi
+    pkg_pattern: '^intel-oneapi-ccl-2021\.\d+$'
     paths:
-      lib: lib
-      include: include/oneapi/ccl
+      lib: opt/intel/oneapi/ccl/{version}/lib
 
 public_namespaces:
   - ccl
