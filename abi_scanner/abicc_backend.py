@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from xml.sax.saxutils import escape as _xml_escape
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,10 @@ class AbiccResult:
     removed_symbol_names: list[str] = field(default_factory=list)
     type_changes: list[str] = field(default_factory=list)
     html_report_path: Optional[Path] = None
+    mode: Literal["headers", "dump", "none"] = "none"
+    debug_info_old: bool = False
+    debug_info_new: bool = False
+    dump_mode_attempted: bool = False
     error: Optional[str] = None
 
 
@@ -91,6 +95,45 @@ def _parse_html_report(html_path: Path) -> AbiccResult:
     return result
 
 
+def has_debug_info(lib_path: Path) -> bool:
+    """Check whether binary has DWARF debug info sections."""
+    if not lib_path.exists():
+        return False
+
+    def _contains_debug_sections(output: str) -> bool:
+        return (".debug_info" in output) or (".zdebug_info" in output)
+
+    readelf_bin = shutil.which("readelf")
+    if readelf_bin:
+        try:
+            proc = subprocess.run(
+                [readelf_bin, "-S", str(lib_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode == 0 and _contains_debug_sections(proc.stdout):
+                return True
+        except Exception:
+            pass
+
+    objdump_bin = shutil.which("objdump")
+    if objdump_bin:
+        try:
+            proc = subprocess.run(
+                [objdump_bin, "-h", str(lib_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode == 0 and _contains_debug_sections(proc.stdout):
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
 def _write_xml_descriptor(
     path: Path,
     version: str,
@@ -132,16 +175,43 @@ class AbiccBackend:
         if not abicc_bin:
             return AbiccResult(error="abi-compliance-checker not found in PATH")
 
+        ctags_bin = shutil.which("ctags") or shutil.which("uctags")
+        vtable_dumper_bin = shutil.which("vtable-dumper")
+        abi_dumper_bin = shutil.which("abi-dumper")
+        readelf_bin = shutil.which("readelf")
+        objdump_bin = shutil.which("objdump")
+
+        if not ctags_bin:
+            return AbiccResult(error="ctags/uctags not found in PATH")
+        if not vtable_dumper_bin:
+            return AbiccResult(error="vtable-dumper not found in PATH")
+        if not (readelf_bin or objdump_bin):
+            return AbiccResult(error="readelf/objdump not found in PATH")
+
         work_dir.mkdir(parents=True, exist_ok=True)
 
         old_xml = work_dir / f"old_{old_version}.xml"
         new_xml = work_dir / f"new_{new_version}.xml"
         report_path = work_dir / f"report_{old_version}_vs_{new_version}.html"
+        old_dump = work_dir / f"old_{old_version}.dump"
+        new_dump = work_dir / f"new_{new_version}.dump"
+
+        debug_info_old = has_debug_info(old_lib_path)
+        debug_info_new = has_debug_info(new_lib_path)
+        dump_mode_attempted = False
 
         # Cache: skip if report already exists (headers haven't changed)
         if report_path.exists():
             logger.info(f"[abicc] using cached report: {report_path}")
-            return _parse_html_report(report_path)
+            cached = _parse_html_report(report_path)
+            cached.debug_info_old = debug_info_old
+            cached.debug_info_new = debug_info_new
+            cached.dump_mode_attempted = debug_info_old and debug_info_new and bool(abi_dumper_bin)
+            if old_dump.exists() and new_dump.exists():
+                cached.mode = "dump"
+            else:
+                cached.mode = "headers"
+            return cached
 
         # Validate paths before running
         if not old_headers_path.exists():
@@ -152,6 +222,46 @@ class AbiccBackend:
             return AbiccResult(error=f"Library not found: {old_lib_path}")
         if not new_lib_path.exists():
             return AbiccResult(error=f"Library not found: {new_lib_path}")
+
+        # Try dump mode first when possible
+        if debug_info_old and debug_info_new and abi_dumper_bin:
+            dump_mode_attempted = True
+            dump_cmd_old = [abi_dumper_bin, str(old_lib_path), "-o", str(old_dump), "-lver", old_version]
+            dump_cmd_new = [abi_dumper_bin, str(new_lib_path), "-o", str(new_dump), "-lver", new_version]
+            dump_compare_cmd = [
+                abicc_bin,
+                "-strict",
+                "-l", library_name,
+                "-old", str(old_dump),
+                "-new", str(new_dump),
+                "-report-path", str(report_path),
+            ]
+            try:
+                p_old = subprocess.run(dump_cmd_old, capture_output=True, text=True, timeout=timeout, check=False)
+                p_new = subprocess.run(dump_cmd_new, capture_output=True, text=True, timeout=timeout, check=False)
+                p_cmp = None
+                if p_old.returncode == 0 and p_new.returncode == 0:
+                    p_cmp = subprocess.run(dump_compare_cmd, capture_output=True, text=True, timeout=timeout, check=False)
+                dump_ok = (
+                    p_old.returncode == 0
+                    and p_new.returncode == 0
+                    and p_cmp is not None
+                    and p_cmp.returncode in (0, 1, 6)
+                    and report_path.exists()
+                )
+                if dump_ok:
+                    result = _parse_html_report(report_path)
+                    result.mode = "dump"
+                    result.debug_info_old = debug_info_old
+                    result.debug_info_new = debug_info_new
+                    result.dump_mode_attempted = dump_mode_attempted
+                    return result
+
+                logger.warning("[abicc] dump mode failed; falling back to headers mode")
+            except subprocess.TimeoutExpired:
+                logger.warning("[abicc] dump mode timed out; falling back to headers mode")
+            except Exception as exc:
+                logger.warning("[abicc] dump mode exception: %s; falling back to headers mode", exc)
 
         try:
             _write_xml_descriptor(old_xml, old_version, old_lib_path, old_headers_path, skip_headers)
@@ -187,11 +297,25 @@ class AbiccBackend:
         if proc.returncode not in (0, 1, 6):
             stderr_snippet = (proc.stderr or "")[-500:]
             return AbiccResult(
-                error=f"abi-compliance-checker exited with code {proc.returncode}: {stderr_snippet}"
+                error=f"abi-compliance-checker exited with code {proc.returncode}: {stderr_snippet}",
+                mode="none",
+                debug_info_old=debug_info_old,
+                debug_info_new=debug_info_new,
+                dump_mode_attempted=dump_mode_attempted,
             )
 
         if not report_path.exists():
-            return AbiccResult(error=f"abi-compliance-checker did not produce report at {report_path}")
+            return AbiccResult(
+                error=f"abi-compliance-checker did not produce report at {report_path}",
+                mode="none",
+                debug_info_old=debug_info_old,
+                debug_info_new=debug_info_new,
+                dump_mode_attempted=dump_mode_attempted,
+            )
 
         result = _parse_html_report(report_path)
+        result.mode = "headers"
+        result.debug_info_old = debug_info_old
+        result.debug_info_new = debug_info_new
+        result.dump_mode_attempted = dump_mode_attempted
         return result

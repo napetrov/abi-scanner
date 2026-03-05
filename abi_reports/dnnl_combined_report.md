@@ -5,6 +5,20 @@
 **Versions scanned:** 2025.0.0 → 2025.3.0  
 **Tools:** abidiff (ELF/symbol-level) + abi-compliance-checker (type/API-level)
 
+## ABICC Execution Info
+
+- **ABICC mode used:** varies by pair (dump|headers)
+- **Debug info in binaries:** varies by pair
+
+| Version Pair | ABICC mode | Debug info old | Debug info new |
+|---|---|---|---|
+| 2025.0.0-861 → 2025.0.1-6 | dump | yes | yes |
+| 2025.0.1-6 → 2025.0.2-27 | dump | yes | yes |
+| 2025.0.2-27 → 2025.1.0-643 | headers | no | yes |
+| 2025.1.0-643 → 2025.1.1-5 | dump | yes | yes |
+| 2025.1.1-5 → 2025.2.0-561 | headers | no | no |
+| 2025.2.0-561 → 2025.3.0-409 | dump | yes | yes |
+
 ## Combined Verdict Logic
 
 | Condition | Combined Status |

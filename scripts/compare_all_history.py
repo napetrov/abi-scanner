@@ -690,6 +690,10 @@ def main():
             status = status_emoji + f" [Bin:{abicc_result.binary_compat:.1f}% Src:{abicc_result.source_compat:.1f}%]"
         pub = stats.get("public", {"removed": 0, "added": 0})
         line = f"{status} | {old_ver} → {new_ver} | public: -{pub['removed']} +{pub['added']}"
+        if args.abicc and abicc_result and not abicc_result.error:
+            _dbg_old = "yes" if abicc_result.debug_info_old else "no"
+            _dbg_new = "yes" if abicc_result.debug_info_new else "no"
+            line += f" [ABICC:{abicc_result.mode} dbg:{_dbg_old}/{_dbg_new}]"
         if args.track_preview:
             prv = stats.get("preview",  {"removed": 0, "added": 0})
             itn = stats.get("internal", {"removed": 0, "added": 0})
@@ -699,6 +703,10 @@ def main():
                 "stats": stats, "old_abi": str(old_abi), "new_abi": str(new_abi), "stdout": diff_stdout}
         if abicc_result and not abicc_result.error:
             _res["abicc"] = {
+                "mode": abicc_result.mode,
+                "debug_info_old": abicc_result.debug_info_old,
+                "debug_info_new": abicc_result.debug_info_new,
+                "dump_mode_attempted": abicc_result.dump_mode_attempted,
                 "binary_compat": abicc_result.binary_compat,
                 "source_compat": abicc_result.source_compat,
                 "binary_problems": abicc_result.binary_problems,
