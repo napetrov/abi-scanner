@@ -441,6 +441,8 @@ def main():
     parser.add_argument("--config", help="Path to package YAML config (alternative to positional args)")
     parser.add_argument("--source", default="apt", help="Source type when --config is used (e.g. apt)")
     parser.add_argument("--abicc", action="store_true", help="Also run abi-compliance-checker for type-level analysis")
+    parser.add_argument("--abicc-timeout", type=int, default=None,
+                        help="Override ABICC timeout in seconds (default from config or 300)")
 
     args = parser.parse_args()
     if not args.config and not args.channel:
@@ -532,6 +534,7 @@ def main():
         else:
             from abi_scanner.abicc_backend import AbiccBackend as _AbiccBackend
             _abicc_backend = _AbiccBackend()
+            _abicc_timeout = args.abicc_timeout or abicc_cfg.get("timeout_sec", 300)
             _abicc_devel_pattern = abicc_cfg.get("devel_pkg_pattern", "")
             _abicc_headers_subpath_tpl = abicc_cfg.get("headers_subpath", "")
             _abicc_skip_headers = abicc_cfg.get("skip_headers", [])
@@ -655,6 +658,7 @@ def main():
                             library_name=args.library_name or args.package,
                             skip_headers=_abicc_skip_headers,
                             work_dir=_abicc_work,
+                            timeout=_abicc_timeout,
                         )
                         if abicc_result.error:
                             print(f"  [abicc] warning: {abicc_result.error}", file=sys.stderr)
@@ -667,11 +671,15 @@ def main():
                     print(f"  [abicc] devel dirs missing for {old_ver}/{new_ver} — skipping")
 
         status = {0:"✅ NO_CHANGE", 4:"✅ COMPATIBLE", 8:"⚠️  INCOMPAT", 12:"❌ BREAKING"}.get(exit_code, f"?({exit_code})")
+        if args.abicc and abicc_result and abicc_result.error:
+            status = status + " [ABICC:⚠️skipped]"
+        elif args.abicc and not abicc_result:
+            status = status + " [ABICC:⚠️skipped]"
         if args.abicc and abicc_result and not abicc_result.error:
             combined = _combined_status(exit_code, abicc_result, old_ver, new_ver)
             status_emoji = {"NO_CHANGE": "✅ NO_CHANGE", "COMPATIBLE": "✅ COMPATIBLE",
                             "INCOMPATIBLE": "⚠️ INCOMPAT", "BREAKING": "🔴 BREAKING",
-                            "SOURCE_BREAK": "🔴 SOURCE_BREAK", "ELF_INTERNAL": "⚠️ ELF_INTERNAL"}.get(combined, combined)
+                            "SOURCE_BREAK": "🟠 SOURCE_BREAK", "ELF_INTERNAL": "⚠️ ELF_INTERNAL"}.get(combined, combined)
             status = status_emoji + f" [Bin:{abicc_result.binary_compat:.1f}% Src:{abicc_result.source_compat:.1f}%]"
         pub = stats.get("public", {"removed": 0, "added": 0})
         line = f"{status} | {old_ver} → {new_ver} | public: -{pub['removed']} +{pub['added']}"

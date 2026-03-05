@@ -30,6 +30,7 @@ private_patterns:
 
 abicc:
   enabled: true
+  timeout_sec: 600
   devel_pkg_pattern: '^intel-oneapi-mkl-devel-2025\.\d+$'
   headers_subpath: 'opt/intel/oneapi/mkl/{version}/include'
   skip_headers: []

@@ -118,6 +118,7 @@ class AbiccBackend:
         library_name: str,
         skip_headers: list[str],
         work_dir: Path,
+        timeout: int = 300,
     ) -> AbiccResult:
         """Run abi-compliance-checker and return parsed result."""
         abicc_bin = shutil.which("abi-compliance-checker")
@@ -165,15 +166,17 @@ class AbiccBackend:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=timeout,
             )
         except subprocess.TimeoutExpired:
-            return AbiccResult(error="abi-compliance-checker timed out after 300s")
+            return AbiccResult(error=f"abi-compliance-checker timed out after {timeout}s")
         except Exception as exc:
             return AbiccResult(error=f"abi-compliance-checker execution failed: {exc}")
 
         # ABICC returns non-zero when incompatible — that's OK
         # Code 6 = header compile errors but report may still be generated
+        if proc.returncode == 6:
+            logger.warning("[abicc] exit code 6: header compilation errors — report may be incomplete")
         if proc.returncode not in (0, 1, 6):
             stderr_snippet = (proc.stderr or "")[-500:]
             return AbiccResult(

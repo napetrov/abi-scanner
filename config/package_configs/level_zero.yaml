@@ -19,6 +19,7 @@ private_patterns:
 
 abicc:
   enabled: true
+  timeout_sec: 300
   devel_pkg_pattern: '^level-zero-devel.*$'
   headers_subpath: 'usr/include/level_zero'
   skip_headers: []
