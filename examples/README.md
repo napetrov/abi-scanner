@@ -41,7 +41,7 @@ embedded firmware all depend on ABI stability for safe rolling upgrades.
 | [09](case09_cpp_vtable/README.md) | C++ Vtable Change | C++ ABI | 4 🟡 | Virtual method inserted, vtable offsets shift |
 | [10](case10_return_type/README.md) | Return Type Change | Symbol API | 4 🟡 | Return type widened, callers read truncated value |
 | [11](case11_global_var_type/README.md) | Global Variable Type | Type Layout | 4 🟡 | Global var type widened, symbol size changes |
-| [12](case12_function_disappears/README.md) | Function Disappears | Symbol API | 12 🔴 | Function moved to inline, vanishes from .so |
+| [12](case12_function_removed/README.md) | Function Disappears | Symbol API | 12 🔴 | Function moved to inline, vanishes from .so |
 | [13](case13_symbol_versioning/README.md) | Symbol Versioning | ELF/Linker | — 🟡 | No version script → no `@@VER` on symbols |
 | [14](case14_cpp_class_size/README.md) | C++ Class Size Change | C++ ABI | 4 🟡 | Private member grows, sizeof(class) changes |
 

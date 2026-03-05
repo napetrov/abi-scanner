@@ -12,9 +12,9 @@ Test structure
 abidiff exit-code reference (libabigail 2.4.0)
 -----------------------------------------------
   0  — NO_CHANGE
-  4  — ABI change detected (type/layout diff or addition); not flagged as breaking
-       by the tool, but should be treated as breaking by release policy.
-  12 — Breaking change (symbol removed).
+  4  — ABI change detected (type/layout diff or addition); classified by stdout
+       as COMPATIBLE (addition only) or INCOMPATIBLE (type/layout/vtable change).
+  12 — BREAKING change (symbol removed).
 """
 import subprocess
 from pathlib import Path
@@ -27,6 +27,7 @@ from abi_helpers import (
     compile_so_cpp,
     make_abi_baseline,
     compare_abi,
+    classify_abi_change,
     examples_dir,
 )
 
@@ -50,7 +51,7 @@ SOURCES_C = {
     # Case 6 — visibility
     "c6_good": (
         '__attribute__((visibility("default"))) int public_api(int x) { return x; }\n'
-        'static int internal_helper(int x) { return x * 2; }\n'
+        'int internal_helper(int x) { return x * 2; }\n'  # no static, hidden only by -fvisibility=hidden
     ),
     "c6_bad": (
         "int public_api(int x)      { return x; }\n"
@@ -69,7 +70,7 @@ SOURCES_C = {
     # Case 11 — global var type
     "c11_v1": "int  lib_version = 1;\n",
     "c11_v2": "long lib_version = 1;\n",
-    # Case 12 — function disappears
+    # Case 12 — function removed (symbol disappears entirely)
     "c12_v1": "int fast_add(int a, int b) { return a + b; }\n",
     "c12_v2": "int other_func(int x) { return x; }\n",
     # Case 13 — symbol versioning
@@ -124,17 +125,12 @@ def _write_cpp(tmp_path, key):
     return p
 
 
-def _verdict_map():
-    return {v.value: v for v in ABIVerdict
-            if hasattr(v, "value") and isinstance(v.value, int) and v.value >= 0}
-
-
 def _run_abi_check(tmp_path, so1, so2):
     xml1, xml2 = tmp_path / "v1.xml", tmp_path / "v2.xml"
     make_abi_baseline(so1, xml1)
     make_abi_baseline(so2, xml2)
     exit_code, stdout = compare_abi(xml1, xml2)
-    actual_verdict = _verdict_map().get(exit_code, ABIVerdict.ERROR)
+    actual_verdict = classify_abi_change(exit_code, stdout)
     return exit_code, actual_verdict, stdout
 
 
@@ -144,17 +140,18 @@ def _run_abi_check(tmp_path, so1, so2):
 #   12 → symbol removed (cases 1, 12)
 #    4 → type/layout/addition change (cases 2, 3, 7, 8, 10, 11)
 #    0 → no change (case 4)
+# classify_abi_change() further splits exit=4 into COMPATIBLE vs INCOMPATIBLE.
 
 C_ABI_CASES = [
-    pytest.param("c1_v1",  "c1_v2",  12, ABIVerdict.BREAKING,  id="case01_symbol_removal"),
-    pytest.param("c2_v1",  "c2_v2",   4, ABIVerdict.COMPATIBLE, id="case02_param_type_change"),
-    pytest.param("c3_v1",  "c3_v2",   4, ABIVerdict.COMPATIBLE, id="case03_compat_addition"),
-    pytest.param("c4_v1",  "c4_v1",   0, ABIVerdict.NO_CHANGE,  id="case04_no_change"),
-    pytest.param("c7_v1",  "c7_v2",   4, ABIVerdict.COMPATIBLE, id="case07_struct_layout"),
-    pytest.param("c8_v1",  "c8_v2",   4, ABIVerdict.COMPATIBLE, id="case08_enum_value_change"),
-    pytest.param("c10_v1", "c10_v2",  4, ABIVerdict.COMPATIBLE, id="case10_return_type"),
-    pytest.param("c11_v1", "c11_v2",  4, ABIVerdict.COMPATIBLE, id="case11_global_var_type"),
-    pytest.param("c12_v1", "c12_v2", 12, ABIVerdict.BREAKING,   id="case12_function_disappears"),
+    pytest.param("c1_v1",  "c1_v2",  12, ABIVerdict.BREAKING,     id="case01_symbol_removal"),
+    pytest.param("c2_v1",  "c2_v2",   4, ABIVerdict.INCOMPATIBLE, id="case02_param_type_change"),
+    pytest.param("c3_v1",  "c3_v2",   4, ABIVerdict.COMPATIBLE,   id="case03_compat_addition"),
+    pytest.param("c4_v1",  "c4_v1",   0, ABIVerdict.NO_CHANGE,    id="case04_no_change"),
+    pytest.param("c7_v1",  "c7_v2",   4, ABIVerdict.INCOMPATIBLE, id="case07_struct_layout"),
+    pytest.param("c8_v1",  "c8_v2",   4, ABIVerdict.INCOMPATIBLE, id="case08_enum_value_change"),
+    pytest.param("c10_v1", "c10_v2",  4, ABIVerdict.INCOMPATIBLE, id="case10_return_type"),
+    pytest.param("c11_v1", "c11_v2",  4, ABIVerdict.INCOMPATIBLE, id="case11_global_var_type"),
+    pytest.param("c12_v1", "c12_v2", 12, ABIVerdict.BREAKING,     id="case12_function_removed"),
 ]
 
 
@@ -162,8 +159,9 @@ C_ABI_CASES = [
 def test_abi_verdict(tmp_path, src_v1, src_v2, expected_exit, expected_verdict):
     """Compile v1/v2 C shared libs and verify abidiff exit code and verdict.
 
-    Covers symbol removal (exit 12), type/layout changes (exit 4),
-    compatible additions (exit 4), and no-change baseline (exit 0).
+    Covers symbol removal (exit 12), type/layout changes classified as
+    INCOMPATIBLE (exit 4 + breaking keywords), compatible additions (exit 4,
+    no breaking keywords), and no-change baseline (exit 0).
     See examples/README.md for full scenario descriptions.
     """
     so1 = compile_so(_write_c(tmp_path, src_v1), tmp_path / "libv1.so")
@@ -174,26 +172,27 @@ def test_abi_verdict(tmp_path, src_v1, src_v2, expected_exit, expected_verdict):
         f"Expected exit {expected_exit}, got {exit_code}.\n{stdout}"
     )
     assert actual_verdict == expected_verdict, (
-        f"Expected {expected_verdict}, got {actual_verdict}"
+        f"Expected {expected_verdict}, got {actual_verdict}.\nabidiff stdout:\n{stdout}"
     )
 
 
 # ── C++ parametrized verdict tests (cases 9, 14) ─────────────────────────────
 
 CPP_ABI_CASES = [
-    pytest.param("c9_v1",  "c9_v2",  4, ABIVerdict.COMPATIBLE, id="case09_cpp_vtable_change"),
-    pytest.param("c14_v1", "c14_v2", 4, ABIVerdict.COMPATIBLE, id="case14_cpp_class_size_change"),
+    pytest.param("c9_v1",  "c9_v2",  4, ABIVerdict.INCOMPATIBLE, id="case09_cpp_vtable_change"),
+    pytest.param("c14_v1", "c14_v2", 4, ABIVerdict.INCOMPATIBLE, id="case14_cpp_class_size_change"),
 ]
 
 
 @pytest.mark.parametrize("src_v1,src_v2,expected_exit,expected_verdict", CPP_ABI_CASES)
 def test_abi_verdict_cpp(tmp_path, src_v1, src_v2, expected_exit, expected_verdict):
-    """Compile v1/v2 C++ shared libs and verify abidiff exit code.
+    """Compile v1/v2 C++ shared libs and verify abidiff exit code and verdict.
 
     Case 09: vtable reordering — abidiff notes "ABI incompatible change to vtable"
-    but returns exit 4 (not 12) in libabigail 2.4.0.
+    but returns exit 4 (not 12) in libabigail 2.4.0. classify_abi_change() maps
+    this to INCOMPATIBLE via the "vtable" keyword.
     Case 14: class sizeof growth — private array doubles; abidiff detects size
-    change and returns exit 4.
+    change and returns exit 4. classify_abi_change() maps to INCOMPATIBLE.
     See examples/case09_cpp_vtable/README.md and examples/case14_cpp_class_size/README.md.
     """
     so1 = compile_so_cpp(_write_cpp(tmp_path, src_v1), tmp_path / "libv1.so")
@@ -204,7 +203,7 @@ def test_abi_verdict_cpp(tmp_path, src_v1, src_v2, expected_exit, expected_verdi
         f"Expected exit {expected_exit}, got {exit_code}.\n{stdout}"
     )
     assert actual_verdict == expected_verdict, (
-        f"Expected {expected_verdict}, got {actual_verdict}"
+        f"Expected {expected_verdict}, got {actual_verdict}.\nabidiff stdout:\n{stdout}"
     )
 
 
@@ -238,6 +237,8 @@ def test_symbol_visibility_leak(tmp_path):
 
     Without -fvisibility=hidden every internal helper becomes public ABI.
     The good build exports only public_api; the bad build exports all three symbols.
+    internal_helper in the good build has no static keyword — it is hidden solely
+    by the -fvisibility=hidden compiler flag, which is the correct approach.
     See examples/case06_visibility/README.md.
     """
     so_good = compile_so(_write_c(tmp_path, "c6_good"), tmp_path / "libgood.so",
@@ -286,3 +287,12 @@ def test_symbol_versioning(tmp_path):
 
     assert len(versioned_syms(so_good)) > 0, "Good lib must have @@VERSION symbols"
     assert len(versioned_syms(so_bad))  == 0, "Bad lib must NOT have @@VERSION symbols"
+
+
+# ── FIX 6: Examples catalog smoke test ───────────────────────────────────────
+
+def test_examples_catalog_complete():
+    """Verify examples/ directory contains all 14 scenario subdirs."""
+    d = examples_dir()
+    dirs = sorted(p.name for p in d.iterdir() if p.is_dir())
+    assert len(dirs) >= 14, f"Expected 14 case dirs, found {len(dirs)}: {dirs}"
