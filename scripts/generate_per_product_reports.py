@@ -121,6 +121,29 @@ def fmt(n: int) -> str:
     return str(n) if n > 0 else "—"
 
 
+def derive_counts(r: dict, s: dict) -> tuple:
+    """Derive effective per-category counts from stats (prefer) or list lengths.
+
+    The abidiff total_rm (fn_rm + var_rm) is used as a conservative floor for
+    public only when no category data is available at all — not when category
+    sums already account for the removals.
+    """
+    pub_rm   = r["pub_rm_n"]  or len(r["pub_rm"])
+    pub_add  = r["pub_add_n"] or len(r["pub_add"])
+    prev_rm  = r["prev_rm_n"] or len(r["prev_rm"])
+    prev_add = r["prev_add_n"]or len(r["prev_add"])
+    int_rm   = r["int_rm_n"]  or len(r["int_rm"])
+    int_add  = r["int_add_n"] or len(r["int_add"])
+    # Only attribute uncategorised removals to public when category data is absent
+    if pub_rm == 0 and prev_rm == 0 and int_rm == 0:
+        abidiff_total_rm = s["fn_rm"] + s["var_rm"]
+        if abidiff_total_rm > 0:
+            pub_rm = abidiff_total_rm
+    total_ch = s["fn_ch"] + s["var_ch"] + r["type_ch"]
+    elf_rm   = s["elf_fn_rm"] + s["elf_var_rm"]
+    return pub_rm, pub_add, prev_rm, prev_add, int_rm, int_add, total_ch, elf_rm
+
+
 def make_table(header: list[str], rows: list[list[str]]) -> list[str]:
     """Render an aligned markdown table (looks good in raw form too)."""
     all_rows = [header] + rows
@@ -296,18 +319,8 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
             elf_rm   = s["elf_fn_rm"] + s["elf_var_rm"]
             total_ch = s["fn_ch"] + s["var_ch"] + r["type_ch"]
 
-            # Counts: prefer stats, fall back to list length
-            pub_rm  = r["pub_rm_n"]  or len(r["pub_rm"])
-            pub_add = r["pub_add_n"] or len(r["pub_add"])
-            prev_rm = r["prev_rm_n"] or len(r["prev_rm"])
-            prev_add= r["prev_add_n"]or len(r["prev_add"])
-            int_rm  = r["int_rm_n"]  or len(r["int_rm"])
-            int_add = r["int_add_n"] or len(r["int_add"])
-
-            # Conservative: if abidiff total_rm > categorised sum, attribute to public
-            abidiff_total_rm = s["fn_rm"] + s["var_rm"]
-            if abidiff_total_rm > pub_rm + prev_rm + int_rm:
-                pub_rm = abidiff_total_rm
+            pub_rm, pub_add, prev_rm, prev_add, int_rm, int_add, total_ch, elf_rm = \
+                derive_counts(r, s)
 
             eff_status = effective_status(r["status"], pub_rm, prev_rm, total_ch)
 
@@ -344,14 +357,8 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
             status_badge = get_status_emoji(eff_status)
             md += [f"#### `{r['library']}` — {status_badge}", ""]
 
-            pub_rm  = r["pub_rm_n"]  or len(r["pub_rm"])
-            pub_add = r["pub_add_n"] or len(r["pub_add"])
-            prev_rm = r["prev_rm_n"] or len(r["prev_rm"])
-            prev_add= r["prev_add_n"]or len(r["prev_add"])
-            int_rm  = r["int_rm_n"]  or len(r["int_rm"])
-            int_add = r["int_add_n"] or len(r["int_add"])
-            total_ch = s["fn_ch"] + s["var_ch"] + r["type_ch"]
-            elf_rm   = s["elf_fn_rm"] + s["elf_var_rm"]
+            pub_rm, pub_add, prev_rm, prev_add, int_rm, int_add, total_ch, elf_rm = \
+                derive_counts(r, s)
 
             reasons = []
             if pub_rm:
@@ -372,7 +379,7 @@ def generate_product_report(product: str, lib_data: dict, scan_date: str, report
                 reasons.append("abidiff exit 12; all public counters are zero — "
                                 "may indicate vtable or linker-script changes not captured in DWARF")
 
-            md.append("**Why BREAKING:**")
+            md.append(f"**Why {eff_status}:**")
             for reason in reasons:
                 md.append(f"- {reason}")
             md.append("")
