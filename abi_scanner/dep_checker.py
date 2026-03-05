@@ -49,25 +49,19 @@ class Severity(str, Enum):
 
 
 # Libraries where ABI compatibility across major versions cannot be assumed.
-ABI_SENSITIVE_LIBRARIES: frozenset[str] = frozenset({
-    "intel-cmplr-lib-rt",
-    "intel-cmplr-lib-ur",
-    "intel-sycl-rt",
-    "intel-opencl-rt",
-    "intel-openmp",
-    "tbb",
-    "mkl",
-    "daal",
-    "dnnl",
-    "oneccl",
-    "impi_rt",
-    "impi-devel",
-    "numpy",
-    "scipy",
-    "libstdc++6",
-    "libstdcxx-ng",
-    "libgcc-ng",
+ABI_SENSITIVE_PACKAGES: frozenset[str] = frozenset({
+    "intel-oneapi-tbb", "intel-oneapi-tbb-devel",
+    "intel-oneapi-mkl", "intel-oneapi-mkl-core", "intel-oneapi-mkl-devel",
+    "intel-oneapi-ccl", "intel-oneapi-ccl-devel",
+    "intel-oneapi-dal", "intel-oneapi-dal-devel",
+    "intel-oneapi-dnnl", "intel-oneapi-dnnl-devel",
+    "intel-oneapi-omp", "libiomp5",
+    "intel-cmplr-lib-rt", "intel-cmplr-lic-rt", "intel-cmplr-lib-ur",
+    "intel-openmp", "mkl", "tbb", "impi_rt", "impi-devel",
+    "intel-sycl-rt", "intel-opencl-rt",
+    "numpy", "scipy", "libstdc++6", "libstdcxx-ng", "libgcc-ng",
 })
+ABI_SENSITIVE_PREFIXES: tuple[str, ...] = ("intel-oneapi-", "intel-cmplr-", "libmkl", "libtbb")
 
 
 @dataclass
@@ -144,8 +138,8 @@ def classify_constraint(dep_name: str, constraint: str, channel: Channel) -> Con
 
 def is_abi_sensitive(dep_target: str) -> bool:
     """Return True if dep_target matches any known ABI-sensitive library."""
-    t = dep_target.lower()
-    return any(lib in t for lib in ABI_SENSITIVE_LIBRARIES)
+    n = dep_target.lower()
+    return n in ABI_SENSITIVE_PACKAGES or any(n.startswith(p) for p in ABI_SENSITIVE_PREFIXES)
 
 
 def is_intel_name_versioned(dep_target: str) -> bool:
@@ -416,7 +410,8 @@ def format_results(results: list[CheckResult], *, color: bool = True) -> str:
     RESET = "\033[0m" if color else ""
 
     lines = []
-    for r in sorted(results, key=lambda x: (x.severity.value, x.pkg_name)):
+    SEVERITY_RANK = {"FAIL": 0, "WARN": 1, "INFO": 2}
+    for r in sorted(results, key=lambda x: (SEVERITY_RANK.get(x.severity.value, 99), x.pkg_name)):
         col = COLORS.get(r.severity, "") if color else ""
         lines.append(
             f"{col}[{r.severity.value}]{RESET} "

@@ -36,11 +36,11 @@ The checker prevents regressions before release and drives toward a consistent, 
 - Any ABI-sensitive system library: `libgcc-ng`, `libstdcxx-ng`, `libstdc++6`, compiler runtimes
 
 **Output:**
-```
+```text
 [FAIL] mkl_umath -> intel-cmplr-lib-rt (unversioned)
        Channel: PyPI | Severity: Critical
        Fix: add intel-cmplr-lib-rt>=2025.3,<2026
-```
+```text
 
 ---
 
@@ -49,20 +49,20 @@ The checker prevents regressions before release and drives toward a consistent, 
 **What:** Flag `>=`-only constraints on libraries known to have ABI incompatibility between major versions.
 
 **ABI-sensitive library list (configurable):**
-```
+```text
 intel-cmplr-lib-rt, intel-cmplr-lib-ur, intel-sycl-rt, intel-opencl-rt,
 intel-openmp, tbb, mkl, daal, dnnl, oneccl, impi_rt, numpy, scipy
-```
+```text
 
 **Policy:** All dependencies on ABI-sensitive libraries should use bounded range (`>=X,<Y`) or wildcard pin (`==X.*`).
 
 **Output:**
-```
+```text
 [WARN] scikit-learn-intelex -> numpy>=1.21.6 (min-only, no upper cap)
        Channel: PyPI | Severity: High
        Risk: NumPy major version bumps may change C API
        Fix: numpy>=1.21.6,<3.0
-```
+```text
 
 ---
 
@@ -83,11 +83,11 @@ intel-openmp, tbb, mkl, daal, dnnl, oneccl, impi_rt, numpy, scipy
 **This check requires access to multiple versions of the same package.**
 
 **Output:**
-```
+```text
 [FAIL] intel-oneapi-ccl-devel: dep on intel-oneapi-ccl-2021.x
        2021.15 -> >=2021.15.2-6   (was: versioned)
        2021.16 -> (unversioned)   REGRESSION DETECTED
-```
+```text
 
 ---
 
@@ -103,12 +103,12 @@ intel-openmp, tbb, mkl, daal, dnnl, oneccl, impi_rt, numpy, scipy
 **Cross-channel rule:** If a dep is exact-pinned in one channel and unversioned in another for the same package, flag the weaker channel.
 
 **Output:**
-```
+```text
 [WARN] numba-dpex -> dpcpp-cpp-rt:
        Conda: exact pin (via run_exports)
        PyPI: unversioned
        Cross-channel inconsistency detected.
-```
+```text
 
 ---
 
@@ -117,17 +117,17 @@ intel-openmp, tbb, mkl, daal, dnnl, oneccl, impi_rt, numpy, scipy
 **What:** Flag wildcard pins (`==2022.*`) that have no accompanying lower bound. A wildcard pin without a floor could install old patch versions.
 
 **Policy:** Wildcard pins should be accompanied by an explicit minimum:
-```
+```text
 Good:  tbb>=2022.3,<2023  (or tbb==2022.*)
 Bad:   tbb==2022.*        if earliest known good is 2022.3
-```
+```text
 
 **Output:**
-```
+```text
 [INFO] dal -> tbb==2022.* (wildcard with no floor)
        Latest known-good: tbb 2022.3.1
        Consider: tbb>=2022.3,<2023
-```
+```text
 
 ---
 
@@ -147,10 +147,10 @@ Bad:   tbb==2022.*        if earliest known good is 2022.3
 **What:** Check that Intel APT packages with `Depends: intel-oneapi-common-vars (>= YYYY.x)` also include an upper-cap of the next year: `(>= YYYY.x), (<< YYYY+1)`.
 
 **Output:**
-```
+```text
 [INFO] intel-oneapi-mkl-core-2025.3 -> intel-oneapi-common-vars (>= 2025.3.0-0)
        No upper cap. Add: intel-oneapi-common-vars (<< 2026)
-```
+```text
 
 ---
 
@@ -178,7 +178,7 @@ class CheckResult:
     channel: str
     message: str
     suggested_fix: str | None
-```
+```text
 
 ---
 
@@ -239,7 +239,7 @@ channels:
     unversioned_abi_sensitive: FAIL
     min_only_abi_sensitive: WARN
     cross_channel_inconsistency: WARN
-```
+```text
 
 ---
 

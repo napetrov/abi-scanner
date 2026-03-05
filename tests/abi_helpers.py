@@ -1,4 +1,5 @@
 """Shared helper functions for ABI integration tests."""
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -11,7 +12,7 @@ def examples_dir() -> Path:
 
 
 def _require_tool(name):
-    if subprocess.run(["which", name], capture_output=True).returncode != 0:
+    if shutil.which(name) is None:
         pytest.skip(f"{name} not found in PATH")
 
 

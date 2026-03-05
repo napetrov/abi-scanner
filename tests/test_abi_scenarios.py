@@ -255,7 +255,7 @@ def test_symbol_visibility_leak(tmp_path):
     bad_syms  = exported(so_bad)
 
     assert "public_api" in good_syms,          f"Good lib must export public_api; got {good_syms}"
-    assert "internal_helper" not in good_syms, f"Good lib must NOT export internal_helper"
+    assert "internal_helper" not in good_syms, "Good lib must NOT export internal_helper"
     assert len(bad_syms) > len(good_syms), (
         f"Bad lib ({len(bad_syms)} syms) should export more than good ({len(good_syms)} syms)"
     )

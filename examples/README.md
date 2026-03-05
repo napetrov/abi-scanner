@@ -49,7 +49,7 @@ embedded firmware all depend on ABI stability for safe rolling upgrades.
 
 ```bash
 # Install tools (Ubuntu/Debian)
-sudo apt-get install gcc g++ binutils libabigail-tools
+sudo apt-get install gcc g++ binutils abigail-tools
 
 # Run all integration tests
 cd <repo-root>
