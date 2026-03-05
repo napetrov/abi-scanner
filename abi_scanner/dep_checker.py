@@ -4,22 +4,22 @@ abi_scanner/dep_checker.py
 Dependency Quality Checker for Intel oneAPI packages.
 Specification: docs/dependency_quality_checks.md
 
-Checks implemented (stubs — ready for implementation):
+Checks implemented (stubs — ready for full implementation):
   CHECK-1: Unversioned dependencies on ABI-sensitive libraries
   CHECK-2: Min-only constraints on ABI-sensitive libraries (no upper cap)
   CHECK-3: Regression detection (constraint weakened between versions)
   CHECK-4: Cross-channel consistency
   CHECK-5: Wildcard pin without floor
-  CHECK-6: APT name-versioned package gap
+  CHECK-6: APT name-versioned package gap (stub)
   CHECK-7: APT common-vars upper-bound missing
 """
 
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Iterator
 
 
@@ -35,10 +35,10 @@ class Channel(str, Enum):
 
 class ConstraintKind(str, Enum):
     UNVERSIONED = "unversioned"
-    MIN_ONLY = "min_only"        # >= only
+    MIN_ONLY = "min_only"            # >= only
     BOUNDED_RANGE = "bounded_range"  # >= and <
     WILDCARD_PIN = "wildcard_pin"    # ==X.*
-    EXACT_PIN = "exact_pin"          # ==X.Y.Z or APT exact
+    EXACT_PIN = "exact_pin"          # ==X.Y.Z or APT exact =X.Y.Z
     OTHER = "other"
 
 
@@ -72,6 +72,8 @@ ABI_SENSITIVE_LIBRARIES: frozenset[str] = frozenset({
 
 @dataclass
 class DepEdge:
+    """A single dependency edge from one package to another."""
+
     pkg_name: str
     pkg_version: str
     dep_target: str
@@ -87,6 +89,8 @@ class DepEdge:
 
 @dataclass
 class CheckResult:
+    """Result of a single check on a single dependency edge."""
+
     check_id: str
     severity: Severity
     pkg_name: str
@@ -108,7 +112,7 @@ def classify_constraint(dep_name: str, constraint: str, channel: Channel) -> Con
 
     c = constraint.strip()
 
-    # Conda exact pin style: "2025.3.2 intel_832" (no operators, has digits)
+    # Conda exact pin style: "2025.3.2 intel_832" (no operators, has digits, no wildcard)
     if channel == Channel.CONDA:
         parts = c.split()
         if parts and all(op not in parts[0] for op in [">", "<", "=", "!", "*"]):
@@ -119,11 +123,11 @@ def classify_constraint(dep_name: str, constraint: str, channel: Channel) -> Con
     if re.search(r"==?\s*[\d.]+\.\*", c) or re.search(r"^[\d.]+\.\*$", c):
         return ConstraintKind.WILDCARD_PIN
 
-    # PyPI / Conda == exact
+    # PyPI / Conda == exact (no wildcard)
     if "==" in c and "*" not in c:
         return ConstraintKind.EXACT_PIN
 
-    # APT exact (single =)
+    # APT exact (single =, not >=)
     if re.match(r"^=\s*\S+", c) and "==" not in c and ">=" not in c:
         return ConstraintKind.EXACT_PIN
 
@@ -149,8 +153,11 @@ def is_intel_name_versioned(dep_target: str) -> bool:
 
     E.g.: intel-oneapi-tbb-2022.3, intel-oneapi-ccl-2021.17 — major line is
     encoded in the package name itself, providing implicit version isolation.
+    Uses character class [a-z0-9-]+ to match hyphenated component names.
     """
-    return bool(re.search(r"intel-oneapi-\w+-\d{4}[\.\d]+", dep_target))
+    return bool(
+        re.search(r"intel-oneapi-[a-z0-9-]+-\d{4}(?:\.\d+)*", dep_target.lower())
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +208,9 @@ def check3_regression(
 ) -> Iterator[CheckResult]:
     """CHECK-3: Constraint weakened between consecutive package versions.
 
-    `history` maps package name to list of DepEdge sorted by version ascending.
+    ``history`` maps package name to a list of ``DepEdge`` objects sorted by
+    version ascending (caller's responsibility).  Channel is included in the
+    grouping key to avoid mixing APT and Conda edges for the same package name.
     """
     SEVERITY_ORDER = [
         ConstraintKind.EXACT_PIN,
@@ -218,16 +227,15 @@ def check3_regression(
         except ValueError:
             return len(SEVERITY_ORDER)
 
-    # Group edges per (pkg_name, dep_target) sorted by pkg_version
-    from collections import defaultdict
-    grouped: dict[tuple[str, str], list[DepEdge]] = defaultdict(list)
-    for pkg_name, edges in history.items():
+    # Group by (pkg_name, dep_target, channel) — channel prevents cross-channel mixing.
+    grouped: dict[tuple[str, str, Channel], list[DepEdge]] = defaultdict(list)
+    for _pkg_name, edges in history.items():
         for e in edges:
-            grouped[(e.pkg_name, e.dep_target)].append(e)
+            grouped[(e.pkg_name, e.dep_target, e.channel)].append(e)
 
-    for (pkg, dep), edges in grouped.items():
-        edges_sorted = sorted(edges, key=lambda x: x.pkg_version)
-        for prev, curr in zip(edges_sorted, edges_sorted[1:]):
+    for (_pkg, dep, ch), edges in grouped.items():
+        # Caller contract: edges already sorted by version; we respect that order.
+        for prev, curr in zip(edges, edges[1:], strict=False):
             if strictness(curr.kind) > strictness(prev.kind):
                 severity = (
                     Severity.FAIL
@@ -240,7 +248,7 @@ def check3_regression(
                     pkg_name=curr.pkg_name,
                     dep_target=dep,
                     constraint=curr.constraint,
-                    channel=curr.channel,
+                    channel=ch,
                     message=(
                         f"Constraint regression: {prev.pkg_version} had "
                         f"{prev.kind.value!r} ({prev.constraint!r}), "
@@ -268,19 +276,17 @@ def check4_cross_channel(
         except ValueError:
             return len(SEVERITY_ORDER)
 
-    # Normalize package names (strip intel-oneapi- prefix, hyphens/underscores)
     def norm(s: str) -> str:
+        """Normalise package names for cross-channel comparison."""
         return re.sub(r"[-_]", "", s.lower().replace("intel-oneapi-", "").replace("intel.", ""))
 
-    # Build lookup: norm(pkg) -> norm(dep) -> {channel: kind}
-    from collections import defaultdict
     lookup: dict[tuple[str, str], dict[Channel, ConstraintKind]] = defaultdict(dict)
     for channel, edges in edges_by_channel.items():
         for e in edges:
             key = (norm(e.pkg_name), norm(e.dep_target))
             lookup[key][channel] = e.kind
 
-    for (pkg, dep), by_ch in lookup.items():
+    for (_pkg, dep), by_ch in lookup.items():
         if len(by_ch) < 2:
             continue
         items = sorted(by_ch.items(), key=lambda x: strictness(x[1]))
@@ -290,9 +296,12 @@ def check4_cross_channel(
             yield CheckResult(
                 check_id="CHECK-4",
                 severity=Severity.WARN,
-                pkg_name=pkg,
+                pkg_name=_pkg,
                 dep_target=dep,
-                constraint=f"{strictest_ch.value}:{strictest_kind.value} vs {weakest_ch.value}:{weakest_kind.value}",
+                constraint=(
+                    f"{strictest_ch.value}:{strictest_kind.value} vs "
+                    f"{weakest_ch.value}:{weakest_kind.value}"
+                ),
                 channel=weakest_ch,
                 message=(
                     f"Cross-channel inconsistency: {strictest_ch.value} uses "
@@ -307,7 +316,6 @@ def check5_wildcard_no_floor(edges: list[DepEdge]) -> Iterator[CheckResult]:
     for e in edges:
         if e.kind != ConstraintKind.WILDCARD_PIN:
             continue
-        # If constraint contains >= as well, there's already a floor
         if ">=" in e.constraint or ">>" in e.constraint:
             continue
         yield CheckResult(
@@ -318,7 +326,42 @@ def check5_wildcard_no_floor(edges: list[DepEdge]) -> Iterator[CheckResult]:
             constraint=e.constraint,
             channel=e.channel,
             message="Wildcard pin has no minimum floor; old patch versions may be selected",
-            suggested_fix=f"Add floor: {e.dep_target}>=<min_known_good> in addition to wildcard",
+            suggested_fix=(
+                f"Add floor: {e.dep_target}>=<min_known_good> in addition to wildcard"
+            ),
+        )
+
+
+def check6_apt_name_versioned_gap(edges: list[DepEdge]) -> Iterator[CheckResult]:
+    """CHECK-6 (APT): name-versioned package with no explicit minor-build lower bound.
+
+    Intel APT packages encode release lines in package names (e.g.
+    ``intel-oneapi-tbb-2022.3``).  An unversioned constraint on such a target
+    is lower risk than a truly generic unversioned dep, but still leaves the
+    minor-build level unconstrained.  This check surfaces those cases so
+    packagers can decide whether to add an explicit lower bound.
+    """
+    for e in edges:
+        if e.channel != Channel.APT:
+            continue
+        if e.kind != ConstraintKind.UNVERSIONED:
+            continue
+        if not is_intel_name_versioned(e.dep_target):
+            continue
+        yield CheckResult(
+            check_id="CHECK-6",
+            severity=Severity.INFO,
+            pkg_name=e.pkg_name,
+            dep_target=e.dep_target,
+            constraint="(unversioned, name-versioned target)",
+            channel=e.channel,
+            message=(
+                "APT dep on name-versioned package has no explicit minor-build floor; "
+                "patch-level drift is possible within the release line."
+            ),
+            suggested_fix=(
+                f"Consider adding: {e.dep_target} (>= <min_patch_build>)"
+            ),
         )
 
 
@@ -337,10 +380,11 @@ def check7_common_vars_no_upper_cap(edges: list[DepEdge]) -> Iterator[CheckResul
                 dep_target=e.dep_target,
                 constraint=e.constraint,
                 channel=e.channel,
-                message="common-vars has min-only constraint; add upper cap for next year",
-                suggested_fix=(
-                    "Add (<< NEXT_YEAR) to prevent silent pickup of a future major release"
+                message=(
+                    "common-vars has min-only constraint; "
+                    "consider adding upper cap to prevent silent pickup of a future major release"
                 ),
+                suggested_fix="Add (<< NEXT_YEAR) alongside the existing lower bound",
             )
 
 
@@ -355,6 +399,7 @@ def run_all_checks(edges: list[DepEdge]) -> list[CheckResult]:
         check1_unversioned(edges),
         check2_min_only(edges),
         check5_wildcard_no_floor(edges),
+        check6_apt_name_versioned_gap(edges),
         check7_common_vars_no_upper_cap(edges),
     ]:
         results.extend(gen)
