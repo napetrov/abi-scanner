@@ -175,18 +175,7 @@ class AbiccBackend:
         if not abicc_bin:
             return AbiccResult(error="abi-compliance-checker not found in PATH")
 
-        ctags_bin = shutil.which("ctags") or shutil.which("uctags")
-        vtable_dumper_bin = shutil.which("vtable-dumper")
         abi_dumper_bin = shutil.which("abi-dumper")
-        readelf_bin = shutil.which("readelf")
-        objdump_bin = shutil.which("objdump")
-
-        if not ctags_bin:
-            return AbiccResult(error="ctags/uctags not found in PATH")
-        if not vtable_dumper_bin:
-            return AbiccResult(error="vtable-dumper not found in PATH")
-        if not (readelf_bin or objdump_bin):
-            return AbiccResult(error="readelf/objdump not found in PATH")
 
         work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -225,43 +214,49 @@ class AbiccBackend:
 
         # Try dump mode first when possible
         if debug_info_old and debug_info_new and abi_dumper_bin:
-            dump_mode_attempted = True
-            dump_cmd_old = [abi_dumper_bin, str(old_lib_path), "-o", str(old_dump), "-lver", old_version]
-            dump_cmd_new = [abi_dumper_bin, str(new_lib_path), "-o", str(new_dump), "-lver", new_version]
-            dump_compare_cmd = [
-                abicc_bin,
-                "-strict",
-                "-l", library_name,
-                "-old", str(old_dump),
-                "-new", str(new_dump),
-                "-report-path", str(report_path),
-            ]
-            try:
-                p_old = subprocess.run(dump_cmd_old, capture_output=True, text=True, timeout=timeout, check=False)
-                p_new = subprocess.run(dump_cmd_new, capture_output=True, text=True, timeout=timeout, check=False)
-                p_cmp = None
-                if p_old.returncode == 0 and p_new.returncode == 0:
-                    p_cmp = subprocess.run(dump_compare_cmd, capture_output=True, text=True, timeout=timeout, check=False)
-                dump_ok = (
-                    p_old.returncode == 0
-                    and p_new.returncode == 0
-                    and p_cmp is not None
-                    and p_cmp.returncode in (0, 1, 6)
-                    and report_path.exists()
-                )
-                if dump_ok:
-                    result = _parse_html_report(report_path)
-                    result.mode = "dump"
-                    result.debug_info_old = debug_info_old
-                    result.debug_info_new = debug_info_new
-                    result.dump_mode_attempted = dump_mode_attempted
-                    return result
+            ctags_bin = shutil.which("ctags") or shutil.which("uctags")
+            vtable_dumper_bin = shutil.which("vtable-dumper")
+            # dump mode prerequisites only; headers mode must still work without them
+            if not ctags_bin or not vtable_dumper_bin:
+                logger.warning("[abicc] dump mode prerequisites missing (ctags/vtable-dumper); using headers mode")
+            else:
+                dump_mode_attempted = True
+                dump_cmd_old = [abi_dumper_bin, str(old_lib_path), "-o", str(old_dump), "-lver", old_version]
+                dump_cmd_new = [abi_dumper_bin, str(new_lib_path), "-o", str(new_dump), "-lver", new_version]
+                dump_compare_cmd = [
+                    abicc_bin,
+                    "-strict",
+                    "-l", library_name,
+                    "-old", str(old_dump),
+                    "-new", str(new_dump),
+                    "-report-path", str(report_path),
+                ]
+                try:
+                    p_old = subprocess.run(dump_cmd_old, capture_output=True, text=True, timeout=timeout, check=False)
+                    p_new = subprocess.run(dump_cmd_new, capture_output=True, text=True, timeout=timeout, check=False)
+                    p_cmp = None
+                    if p_old.returncode == 0 and p_new.returncode == 0:
+                        p_cmp = subprocess.run(dump_compare_cmd, capture_output=True, text=True, timeout=timeout, check=False)
+                    dump_ok = (
+                        p_old.returncode == 0
+                        and p_new.returncode == 0
+                        and p_cmp is not None
+                        and p_cmp.returncode in (0, 1, 6)
+                        and report_path.exists()
+                    )
+                    if dump_ok:
+                        result = _parse_html_report(report_path)
+                        result.mode = "dump"
+                        result.debug_info_old = debug_info_old
+                        result.debug_info_new = debug_info_new
+                        result.dump_mode_attempted = dump_mode_attempted
+                        return result
 
-                logger.warning("[abicc] dump mode failed; falling back to headers mode")
-            except subprocess.TimeoutExpired:
-                logger.warning("[abicc] dump mode timed out; falling back to headers mode")
-            except Exception as exc:
-                logger.warning("[abicc] dump mode exception: %s; falling back to headers mode", exc)
+                    logger.warning("[abicc] dump mode failed; falling back to headers mode")
+                except subprocess.TimeoutExpired:
+                    logger.warning("[abicc] dump mode timed out; falling back to headers mode")
+                except Exception as exc:
+                    logger.warning("[abicc] dump mode exception: %s; falling back to headers mode", exc)
 
         try:
             _write_xml_descriptor(old_xml, old_version, old_lib_path, old_headers_path, skip_headers)
