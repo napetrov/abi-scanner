@@ -275,10 +275,14 @@ def check4_cross_channel(
         return re.sub(r"[-_]", "", s.lower().replace("intel-oneapi-", "").replace("intel.", ""))
 
     lookup: dict[tuple[str, str], dict[Channel, ConstraintKind]] = defaultdict(dict)
+    # Store original (un-normalized) names for human-readable output
+    orig_names: dict[tuple[str, str], tuple[str, str]] = {}
     for channel, edges in edges_by_channel.items():
         for e in edges:
             key = (norm(e.pkg_name), norm(e.dep_target))
             lookup[key][channel] = e.kind
+            if key not in orig_names:
+                orig_names[key] = (e.pkg_name, e.dep_target)
 
     for (_pkg, dep), by_ch in lookup.items():
         if len(by_ch) < 2:
@@ -287,11 +291,12 @@ def check4_cross_channel(
         strictest_ch, strictest_kind = items[0]
         weakest_ch, weakest_kind = items[-1]
         if strictness(weakest_kind) > strictness(strictest_kind):
+            orig_pkg, orig_dep = orig_names.get((_pkg, dep), (_pkg, dep))
             yield CheckResult(
                 check_id="CHECK-4",
                 severity=Severity.WARN,
-                pkg_name=_pkg,
-                dep_target=dep,
+                pkg_name=orig_pkg,
+                dep_target=orig_dep,
                 constraint=(
                     f"{strictest_ch.value}:{strictest_kind.value} vs "
                     f"{weakest_ch.value}:{weakest_kind.value}"
