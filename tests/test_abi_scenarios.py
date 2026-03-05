@@ -1,7 +1,20 @@
 """Integration tests for ABI scenarios using real compiled .so fixtures.
 
-Each test compiles toy C libraries, generates ABI baselines with abidw,
-and compares them with abidiff to verify the correct exit code / verdict.
+See ``examples/README.md`` for the human-readable catalog of all 14 scenarios,
+with build instructions, code diffs, and explanations of what each case catches.
+
+Test structure
+--------------
+* Cases 1-4, 7-8, 10-12 are parametrized through ``test_abi_verdict`` (C sources).
+* Cases 9, 14 are parametrized through ``test_abi_verdict_cpp`` (C++ sources).
+* Cases 5, 6, 13 are informational ELF/linker checks (@pytest.mark.informational).
+
+abidiff exit-code reference (libabigail 2.4.0)
+-----------------------------------------------
+  0  — NO_CHANGE
+  4  — ABI change detected (type/layout diff or addition); not flagged as breaking
+       by the tool, but should be treated as breaking by release policy.
+  12 — Breaking change (symbol removed).
 """
 import subprocess
 from pathlib import Path
@@ -9,181 +22,267 @@ from pathlib import Path
 import pytest
 
 from abi_scanner.analyzer import ABIVerdict
+from abi_helpers import (
+    compile_so,
+    compile_so_cpp,
+    make_abi_baseline,
+    compare_abi,
+    examples_dir,
+)
 
 
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
+# ── Inline source fixtures ────────────────────────────────────────────────────
 
-def compile_so(src_path, out_path, extra_flags=None):
-    """Compile a .c file to a shared library with gcc -shared -fPIC."""
-    cmd = ["gcc", "-shared", "-fPIC", "-g", str(src_path), "-o", str(out_path)]
-    if extra_flags:
-        cmd.extend(extra_flags)
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"gcc failed: {result.stderr}")
-    return out_path
-
-
-def make_abi_baseline(so_path, xml_out):
-    """Generate ABI baseline XML using abidw."""
-    if not subprocess.run(["which", "abidw"], capture_output=True).returncode == 0:
-        pytest.skip("abidw not found")
-    result = subprocess.run(
-        ["abidw", "--out-file", str(xml_out), str(so_path)],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"abidw failed: {result.stderr}")
-    return xml_out
-
-
-def compare_abi(old_xml, new_xml):
-    """Compare two ABI baselines using abidiff. Returns (exit_code, stdout)."""
-    if not subprocess.run(["which", "abidiff"], capture_output=True).returncode == 0:
-        pytest.skip("abidiff not found")
-    result = subprocess.run(
-        ["abidiff", str(old_xml), str(new_xml)],
-        capture_output=True, text=True
-    )
-    return result.returncode, result.stdout
-
-
-# ---------------------------------------------------------------------------
-# Fixture source code (inline)
-# ---------------------------------------------------------------------------
-
-SOURCES = {
-    "case1_v1": "int compute(int x) { return x * 2; }\nint helper(int x)  { return x + 1; }\n",
-    "case1_v2": "int compute(int x) { return x * 2; }\n/* helper() removed - BREAKING */\n",
-    "case2_v1": "double process(int a, int b) { return (double)(a + b); }\n",
-    "case2_v2": "double process(double a, int b) { return a + b; }\n",
-    "case3_v1": "int get_version(void) { return 1; }\n",
-    "case3_v2": "int get_version(void) { return 1; }\nint get_build(void) { return 42; }\n",
-    "case4_v1": "int stable_api(int x) { return x; }\n",
-    "case5_src": "int foo(void) { return 0; }\n",
-    "case6_good": (
+SOURCES_C = {
+    # Case 1 — symbol removal
+    "c1_v1": "int compute(int x) { return x * 2; }\nint helper(int x)  { return x + 1; }\n",
+    "c1_v2": "int compute(int x) { return x * 2; }\n",
+    # Case 2 — param type change
+    "c2_v1": "double process(int a, int b) { return (double)(a + b); }\n",
+    "c2_v2": "double process(double a, int b) { return a + b; }\n",
+    # Case 3 — compatible addition
+    "c3_v1": "int get_version(void) { return 1; }\n",
+    "c3_v2": "int get_version(void) { return 1; }\nint get_build(void) { return 42; }\n",
+    # Case 4 — no change
+    "c4_v1": "int stable_api(int x) { return x; }\n",
+    # Case 5 — soname
+    "c5":    "int foo(void) { return 0; }\n",
+    # Case 6 — visibility
+    "c6_good": (
         '__attribute__((visibility("default"))) int public_api(int x) { return x; }\n'
         'static int internal_helper(int x) { return x * 2; }\n'
     ),
-    "case6_bad": (
+    "c6_bad": (
         "int public_api(int x)      { return x; }\n"
         "int internal_helper(int x) { return x * 2; }\n"
         "int another_impl(int x)    { return x + 3; }\n"
     ),
+    # Case 7 — struct layout
+    "c7_v1": "struct Point { int x; int y; };\nint get_x(struct Point *p) { return p->x; }\n",
+    "c7_v2": "struct Point { int x; int y; int z; };\nint get_x(struct Point *p) { return p->x; }\n",
+    # Case 8 — enum value change
+    "c8_v1": "typedef enum { RED=0, GREEN=1, BLUE=2 } Color;\nColor get_color(void) { return RED; }\n",
+    "c8_v2": "typedef enum { RED=0, YELLOW=1, GREEN=2, BLUE=3 } Color;\nColor get_color(void) { return RED; }\n",
+    # Case 10 — return type
+    "c10_v1": "int  get_count(void) { return 42; }\n",
+    "c10_v2": "long get_count(void) { return 42; }\n",
+    # Case 11 — global var type
+    "c11_v1": "int  lib_version = 1;\n",
+    "c11_v2": "long lib_version = 1;\n",
+    # Case 12 — function disappears
+    "c12_v1": "int fast_add(int a, int b) { return a + b; }\n",
+    "c12_v2": "int other_func(int x) { return x; }\n",
+    # Case 13 — symbol versioning
+    "c13": "int foo(void) { return 0; }\nint bar(void) { return 1; }\n",
 }
 
+SOURCES_CPP = {
+    # Case 9 — vtable change
+    "c9_v1": (
+        "class Widget {\npublic:\n"
+        "    virtual int draw();\n"
+        "    virtual int resize();\n"
+        "};\n"
+        "int Widget::draw()   { return 0; }\n"
+        "int Widget::resize() { return 0; }\n"
+    ),
+    "c9_v2": (
+        "class Widget {\npublic:\n"
+        "    virtual int draw();\n"
+        "    virtual int recolor();\n"
+        "    virtual int resize();\n"
+        "};\n"
+        "int Widget::draw()    { return 0; }\n"
+        "int Widget::recolor() { return 0; }\n"
+        "int Widget::resize()  { return 0; }\n"
+    ),
+    # Case 14 — class size change
+    "c14_v1": (
+        'class Buffer {\npublic:\n    int size() { return 64; }\n'
+        'private:\n    char data[64];\n};\n'
+        'extern "C" Buffer* make_buffer() { return new Buffer(); }\n'
+    ),
+    "c14_v2": (
+        'class Buffer {\npublic:\n    int size() { return 128; }\n'
+        'private:\n    char data[128];\n};\n'
+        'extern "C" Buffer* make_buffer() { return new Buffer(); }\n'
+    ),
+}
 
-def write_src(tmp_path, name):
-    src = tmp_path / f"{name}.c"
-    src.write_text(SOURCES[name])
-    return src
+VERSION_MAP_CONTENT = "LIBFOO_1.0 {\n  global: foo; bar;\n  local: *;\n};\n"
 
 
-# ---------------------------------------------------------------------------
-# Parametrized ABI verdict tests (cases 1-4)
-# ---------------------------------------------------------------------------
+def _write_c(tmp_path, key):
+    p = tmp_path / f"{key}.c"
+    p.write_text(SOURCES_C[key])
+    return p
 
-ABI_CASES = [
-    pytest.param("case1_v1", "case1_v2", 12, ABIVerdict.BREAKING,  id="case1_symbol_removal"),
-    # NOTE: abidiff 2.4.0 returns exit 4 (ABI_CHANGE) for type changes, not 12 (BREAKING).
-    # Exit 12 is only triggered by symbol removal. Type changes still indicate ABI drift.
-    pytest.param("case2_v1", "case2_v2",  4, ABIVerdict.COMPATIBLE, id="case2_param_type_change"),
-    pytest.param("case3_v1", "case3_v2",  4, ABIVerdict.COMPATIBLE, id="case3_compat_addition"),
-    pytest.param("case4_v1", "case4_v1",  0, ABIVerdict.NO_CHANGE,  id="case4_no_change"),
+
+def _write_cpp(tmp_path, key):
+    p = tmp_path / f"{key}.cpp"
+    p.write_text(SOURCES_CPP[key])
+    return p
+
+
+def _verdict_map():
+    return {v.value: v for v in ABIVerdict
+            if hasattr(v, "value") and isinstance(v.value, int) and v.value >= 0}
+
+
+def _run_abi_check(tmp_path, so1, so2):
+    xml1, xml2 = tmp_path / "v1.xml", tmp_path / "v2.xml"
+    make_abi_baseline(so1, xml1)
+    make_abi_baseline(so2, xml2)
+    exit_code, stdout = compare_abi(xml1, xml2)
+    actual_verdict = _verdict_map().get(exit_code, ABIVerdict.ERROR)
+    return exit_code, actual_verdict, stdout
+
+
+# ── Parametrized C verdict tests (cases 1-4, 7-8, 10-12) ─────────────────────
+#
+# abidiff 2.4.0 exit codes:
+#   12 → symbol removed (cases 1, 12)
+#    4 → type/layout/addition change (cases 2, 3, 7, 8, 10, 11)
+#    0 → no change (case 4)
+
+C_ABI_CASES = [
+    pytest.param("c1_v1",  "c1_v2",  12, ABIVerdict.BREAKING,  id="case01_symbol_removal"),
+    pytest.param("c2_v1",  "c2_v2",   4, ABIVerdict.COMPATIBLE, id="case02_param_type_change"),
+    pytest.param("c3_v1",  "c3_v2",   4, ABIVerdict.COMPATIBLE, id="case03_compat_addition"),
+    pytest.param("c4_v1",  "c4_v1",   0, ABIVerdict.NO_CHANGE,  id="case04_no_change"),
+    pytest.param("c7_v1",  "c7_v2",   4, ABIVerdict.COMPATIBLE, id="case07_struct_layout"),
+    pytest.param("c8_v1",  "c8_v2",   4, ABIVerdict.COMPATIBLE, id="case08_enum_value_change"),
+    pytest.param("c10_v1", "c10_v2",  4, ABIVerdict.COMPATIBLE, id="case10_return_type"),
+    pytest.param("c11_v1", "c11_v2",  4, ABIVerdict.COMPATIBLE, id="case11_global_var_type"),
+    pytest.param("c12_v1", "c12_v2", 12, ABIVerdict.BREAKING,   id="case12_function_disappears"),
 ]
 
 
-@pytest.mark.parametrize("src_v1,src_v2,expected_exit,expected_verdict", ABI_CASES)
+@pytest.mark.parametrize("src_v1,src_v2,expected_exit,expected_verdict", C_ABI_CASES)
 def test_abi_verdict(tmp_path, src_v1, src_v2, expected_exit, expected_verdict):
-    """Compile v1/v2 shared libs, generate ABI XMLs, compare and assert verdict.
+    """Compile v1/v2 C shared libs and verify abidiff exit code and verdict.
 
-    Catches: symbol removal, param type changes, compatible additions, no-op diffs.
+    Covers symbol removal (exit 12), type/layout changes (exit 4),
+    compatible additions (exit 4), and no-change baseline (exit 0).
+    See examples/README.md for full scenario descriptions.
     """
-    so1 = compile_so(write_src(tmp_path, src_v1), tmp_path / "libv1.so")
-    so2 = compile_so(write_src(tmp_path, src_v2), tmp_path / "libv2.so")
-
-    xml1 = tmp_path / "v1.xml"
-    xml2 = tmp_path / "v2.xml"
-    make_abi_baseline(so1, xml1)
-    make_abi_baseline(so2, xml2)
-
-    exit_code, stdout = compare_abi(xml1, xml2)
-
-    verdict_map = {v.value: v for v in ABIVerdict if hasattr(v, 'value') and isinstance(v.value, int) and v.value >= 0}
-    actual_verdict = verdict_map.get(exit_code, ABIVerdict.ERROR)
+    so1 = compile_so(_write_c(tmp_path, src_v1), tmp_path / "libv1.so")
+    so2 = compile_so(_write_c(tmp_path, src_v2), tmp_path / "libv2.so")
+    exit_code, actual_verdict, stdout = _run_abi_check(tmp_path, so1, so2)
 
     assert exit_code == expected_exit, (
-        f"Expected abidiff exit {expected_exit}, got {exit_code}.\n{stdout}"
+        f"Expected exit {expected_exit}, got {exit_code}.\n{stdout}"
     )
     assert actual_verdict == expected_verdict, (
-        f"Expected verdict {expected_verdict}, got {actual_verdict}"
+        f"Expected {expected_verdict}, got {actual_verdict}"
     )
 
 
-# ---------------------------------------------------------------------------
-# Case 5: SONAME presence/absence
-# ---------------------------------------------------------------------------
+# ── C++ parametrized verdict tests (cases 9, 14) ─────────────────────────────
+
+CPP_ABI_CASES = [
+    pytest.param("c9_v1",  "c9_v2",  4, ABIVerdict.COMPATIBLE, id="case09_cpp_vtable_change"),
+    pytest.param("c14_v1", "c14_v2", 4, ABIVerdict.COMPATIBLE, id="case14_cpp_class_size_change"),
+]
+
+
+@pytest.mark.parametrize("src_v1,src_v2,expected_exit,expected_verdict", CPP_ABI_CASES)
+def test_abi_verdict_cpp(tmp_path, src_v1, src_v2, expected_exit, expected_verdict):
+    """Compile v1/v2 C++ shared libs and verify abidiff exit code.
+
+    Case 09: vtable reordering — abidiff notes "ABI incompatible change to vtable"
+    but returns exit 4 (not 12) in libabigail 2.4.0.
+    Case 14: class sizeof growth — private array doubles; abidiff detects size
+    change and returns exit 4.
+    See examples/case09_cpp_vtable/README.md and examples/case14_cpp_class_size/README.md.
+    """
+    so1 = compile_so_cpp(_write_cpp(tmp_path, src_v1), tmp_path / "libv1.so")
+    so2 = compile_so_cpp(_write_cpp(tmp_path, src_v2), tmp_path / "libv2.so")
+    exit_code, actual_verdict, stdout = _run_abi_check(tmp_path, so1, so2)
+
+    assert exit_code == expected_exit, (
+        f"Expected exit {expected_exit}, got {exit_code}.\n{stdout}"
+    )
+    assert actual_verdict == expected_verdict, (
+        f"Expected {expected_verdict}, got {actual_verdict}"
+    )
+
+
+# ── Case 05: SONAME ────────────────────────────────────────────────────────────
 
 @pytest.mark.informational
 def test_soname_detection(tmp_path):
-    """Detect missing SONAME tag in ELF dynamic section.
+    """Detect missing SONAME tag in ELF dynamic section (case 05).
 
-    A library shipped without -soname cannot be located by the dynamic linker
-    using its expected versioned name. This test verifies that readelf reports
-    the SONAME tag when -Wl,-soname is used and its absence otherwise.
+    A library shipped without -Wl,-soname cannot be versioned by the dynamic
+    linker. readelf -d must show (SONAME) for the good build and nothing for bad.
+    See examples/case05_soname/README.md.
     """
-    src = write_src(tmp_path, "case5_src")
+    src = _write_c(tmp_path, "c5")
+    so_good = compile_so(src, tmp_path / "libgood.so", ["-Wl,-soname,libfoo.so.1"])
+    so_bad  = compile_so(src, tmp_path / "libbad.so")
 
-    so_good = compile_so(src, tmp_path / "libfoo_good.so", extra_flags=["-Wl,-soname,libfoo.so.1"])
-    so_bad  = compile_so(src, tmp_path / "libfoo_bad.so")
+    def has_soname(p):
+        r = subprocess.run(["readelf", "-d", str(p)], capture_output=True, text=True)
+        return "(SONAME)" in r.stdout
 
-    def has_soname(so_path):
-        result = subprocess.run(["readelf", "-d", str(so_path)], capture_output=True, text=True)
-        return "(SONAME)" in result.stdout
-
-    assert has_soname(so_good), "Good library should have SONAME tag"
-    assert not has_soname(so_bad), "Bad library should NOT have SONAME tag"
+    assert has_soname(so_good),    "Good lib must have SONAME tag"
+    assert not has_soname(so_bad), "Bad lib must NOT have SONAME tag"
 
 
-# ---------------------------------------------------------------------------
-# Case 6: Symbol visibility leak
-# ---------------------------------------------------------------------------
+# ── Case 06: Symbol visibility ────────────────────────────────────────────────
 
 @pytest.mark.informational
 def test_symbol_visibility_leak(tmp_path):
-    """Detect symbol visibility leak when -fvisibility=hidden is not used.
+    """Detect unintended symbol export when -fvisibility=hidden is absent (case 06).
 
-    Without -fvisibility=hidden all internal symbols are unintentionally
-    exported, growing the public ABI surface and risking accidental breakage.
-    This test verifies that the 'good' build (with visibility=hidden) exports
-    only the explicitly marked public symbol, while the 'bad' build leaks all.
+    Without -fvisibility=hidden every internal helper becomes public ABI.
+    The good build exports only public_api; the bad build exports all three symbols.
+    See examples/case06_visibility/README.md.
     """
-    so_good = compile_so(write_src(tmp_path, "case6_good"), tmp_path / "libvis_good.so",
-                         extra_flags=["-fvisibility=hidden"])
-    so_bad  = compile_so(write_src(tmp_path, "case6_bad"),  tmp_path / "libvis_bad.so")
+    so_good = compile_so(_write_c(tmp_path, "c6_good"), tmp_path / "libgood.so",
+                         ["-fvisibility=hidden"])
+    so_bad  = compile_so(_write_c(tmp_path, "c6_bad"),  tmp_path / "libbad.so")
 
-    def exported_symbols(so_path):
-        result = subprocess.run(
-            ["nm", "--dynamic", "--defined-only", str(so_path)],
-            capture_output=True, text=True
-        )
-        syms = []
-        for line in result.stdout.splitlines():
-            parts = line.strip().split()
-            if not parts:
-                continue
-            name = parts[-1]
-            if not name.startswith("_"):
-                syms.append(name)
-        return syms
+    def exported(so):
+        r = subprocess.run(["nm", "--dynamic", "--defined-only", str(so)],
+                           capture_output=True, text=True)
+        return [ln.split()[-1] for ln in r.stdout.splitlines()
+                if ln.strip() and not ln.split()[-1].startswith("_")]
 
-    good_syms = exported_symbols(so_good)
-    bad_syms  = exported_symbols(so_bad)
+    good_syms = exported(so_good)
+    bad_syms  = exported(so_bad)
 
-    assert "public_api" in good_syms, f"Good lib must export public_api, got: {good_syms}"
-    assert "internal_helper" not in good_syms, f"Good lib must NOT export internal_helper, got: {good_syms}"
+    assert "public_api" in good_syms,          f"Good lib must export public_api; got {good_syms}"
+    assert "internal_helper" not in good_syms, f"Good lib must NOT export internal_helper"
     assert len(bad_syms) > len(good_syms), (
-        f"Bad lib ({len(bad_syms)} syms) should export more than good lib ({len(good_syms)} syms)"
+        f"Bad lib ({len(bad_syms)} syms) should export more than good ({len(good_syms)} syms)"
     )
+
+
+# ── Case 13: Symbol versioning ────────────────────────────────────────────────
+
+@pytest.mark.informational
+def test_symbol_versioning(tmp_path):
+    """Verify that a linker version script annotates symbols with @@VERSION (case 13).
+
+    Without a version script future SONAME evolution is harder and symbol
+    interposition cannot be controlled precisely.
+    See examples/case13_symbol_versioning/README.md.
+    """
+    src = _write_c(tmp_path, "c13")
+
+    map_file = tmp_path / "libfoo.map"
+    map_file.write_text(VERSION_MAP_CONTENT)
+
+    so_good = compile_so(src, tmp_path / "libgood.so",
+                         [f"-Wl,--version-script={map_file}"])
+    so_bad  = compile_so(src, tmp_path / "libbad.so")
+
+    def versioned_syms(so):
+        r = subprocess.run(["readelf", "--syms", str(so)],
+                           capture_output=True, text=True)
+        return [ln for ln in r.stdout.splitlines() if "@@" in ln]
+
+    assert len(versioned_syms(so_good)) > 0, "Good lib must have @@VERSION symbols"
+    assert len(versioned_syms(so_bad))  == 0, "Bad lib must NOT have @@VERSION symbols"
