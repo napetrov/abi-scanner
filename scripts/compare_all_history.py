@@ -34,8 +34,14 @@ def _get_micromamba() -> str:
     if _MICROMAMBA_CACHE is None:
         _MICROMAMBA_CACHE = _find_micromamba()
     return _MICROMAMBA_CACHE
-import tempfile
 import json
+import logging
+
+logger = logging.getLogger(__name__)
+try:
+    import yaml as _yaml
+except ImportError:
+    _yaml = None
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
@@ -363,11 +369,66 @@ def print_details(stdout: str, old_ver: str, new_ver: str,
             print_grouped(added, "Added")
 
 
+def _resolve_headers(devel_dir, ver, tpl):
+    """Resolve headers path from template with {version}. (S3: module-level)"""
+    if not tpl:
+        return devel_dir
+    # Try multiple version formats: full, no-build, major.minor
+    _ver_stripped = ver.split("-")[0]  # e.g. 2025.0.0
+    _ver_parts = _ver_stripped.split(".")
+    _ver_major_minor = ".".join(_ver_parts[:2])  # e.g. 2025.0
+    for v in [ver, _ver_stripped, _ver_major_minor]:
+        p = devel_dir / tpl.format(version=v)
+        if p.exists():
+            return p
+    # fallback: find any directory matching pattern
+    _tpl_prefix = tpl.split("{version}")[0] if "{version}" in tpl else ""
+    if _tpl_prefix:
+        _candidates = list((devel_dir / _tpl_prefix).parent.glob("*")) if "{version}" in tpl else []
+        if _candidates:
+            # Sort by version-aware key to avoid lexicographic issues (e.g. 1.10 > 1.9)
+            def _ver_key(p):
+                parts = re.split(r'[.\-]', p.name)
+                return [int(x) if x.isdigit() else x for x in parts]
+            best = sorted(_candidates, key=_ver_key)[-1]
+            suffix = tpl.split("{version}")[-1].lstrip("/") if "{version}" in tpl else ""
+            return best / suffix if suffix else best
+    fallback = devel_dir / tpl.format(version=_ver_major_minor)
+    if not fallback.exists():
+        logger.warning("[abicc] headers path not found for version %s: %s", ver, fallback)
+        return devel_dir
+    return fallback
+
+
+def _combined_status(abidiff_ec, abicc_r, old_ver=None, new_ver=None):
+    """Combine abidiff and ABICC verdicts into a single status. (S3: module-level)"""
+    abidiff_status = {0: "NO_CHANGE", 4: "COMPATIBLE", 8: "INCOMPATIBLE", 12: "BREAKING"}.get(abidiff_ec, "UNKNOWN")
+    if abicc_r is None or abicc_r.error:
+        return abidiff_status
+    has_source_break = abicc_r.source_compat < 100.0 or abicc_r.source_problems > 0
+    has_binary_break = abicc_r.binary_compat < 100.0 or abicc_r.binary_problems > 0
+    if has_source_break or has_binary_break:
+        if abidiff_status == "BREAKING":
+            return "BREAKING"
+        # Distinguish binary-only vs source-level breaks
+        if has_binary_break and not has_source_break:
+            return "BINARY_BREAK"
+        return "SOURCE_BREAK"
+    if abidiff_status == "BREAKING":
+        _pair = f"{old_ver}→{new_ver}" if old_ver and new_ver else "unknown"
+        logger.warning(
+            "[abicc] ELF_INTERNAL: abidiff found breaks ABICC could not confirm (%s). "
+            "Manual review recommended for template/noexcept changes.", _pair
+        )
+        return "ELF_INTERNAL"
+    return abidiff_status
+
+
 def main():
     """Main entry point for ABI comparison workflow."""
     parser = argparse.ArgumentParser(description="Compare ABI across all package versions")
-    parser.add_argument("channel", help="Conda channel (e.g., conda-forge)")
-    parser.add_argument("package", help="Package name (e.g., dal)")
+    parser.add_argument("channel", nargs="?", default=None, help="Conda channel (e.g., conda-forge) -- optional when --config is used")
+    parser.add_argument("package", nargs="?", default=None, help="Package name (e.g., dal) -- optional when --config is used")
     default_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "abi_cache"
     parser.add_argument("--cache-dir",      default=str(default_cache))
     parser.add_argument("--devel-package",  help="Development package (e.g., dal-devel)")
@@ -384,8 +445,45 @@ def main():
     parser.add_argument("--apt-base-url", default=INTEL_APT_BASE, help="APT base URL")
     parser.add_argument("--apt-packages-url", default=None,
                         help="Override APT Packages index URL (supports .gz and .xz)")
+    parser.add_argument("--config", help="Path to package YAML config (alternative to positional args)")
+    parser.add_argument("--source", default="apt", help="Source type when --config is used (e.g. apt)")
+    parser.add_argument("--abicc", action="store_true", help="Also run abi-compliance-checker for type-level analysis")
+    parser.add_argument("--abicc-timeout", type=int, default=None,
+                        help="Override ABICC timeout in seconds (default from config or 300)")
 
     args = parser.parse_args()
+    if not args.config and not args.channel:
+        parser.error("Either positional args (channel package) or --config must be provided")
+
+    # If --config is provided, derive channel/package/etc from YAML
+    if args.config:
+        if _yaml is None:
+            print("PyYAML not installed — cannot use --config", file=sys.stderr)
+            return 1
+        with open(args.config) as _cf:
+            _cfg = _yaml.safe_load(_cf)
+        # Set channel from source arg
+        args.channel = args.source
+        # Derive package from sources section
+        _src_cfg = _cfg.get("sources", {}).get(args.source, {})
+        args.package = _cfg.get("library", "unknown")
+        if not args.apt_pkg_pattern and _src_cfg.get("pkg_pattern"):
+            args.apt_pkg_pattern = _src_cfg["pkg_pattern"]
+        if not args.apt_packages_url and _src_cfg.get("apt_packages_url"):
+            args.apt_packages_url = _src_cfg["apt_packages_url"]
+        if not args.apt_base_url or args.apt_base_url == INTEL_APT_BASE:
+            if _src_cfg.get("base_url"):
+                args.apt_base_url = _src_cfg["base_url"]
+        if not args.library_name:
+            args.library_name = _cfg.get("primary_lib", "")
+        # Store ABICC config for later use
+        args._abicc_cfg = _cfg.get("abicc", {}) if args.abicc else {}
+        args._lib_paths_cfg = _src_cfg.get("paths", {})
+        args._cfg_version_key = _src_cfg.get("paths", {}).get("lib", "")
+    else:
+        args._abicc_cfg = {}
+        args._lib_paths_cfg = {}
+        args._cfg_version_key = ""
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     classifier = SymbolClassifier() if args.track_preview or args.details or args.json else None
@@ -426,6 +524,35 @@ def main():
     print()
 
     results = []
+    abicc_extract_dirs = {}  # version -> extract_dir (for --abicc devel pkg)
+
+    # Pre-populate abicc_extract_dirs from already-extracted devel dirs
+    if args.abicc:
+        for _v in versions:
+            _pre_devel = cache_dir / f"apt_devel_extract_{_v}"
+            if _pre_devel.exists():
+                abicc_extract_dirs[_v] = _pre_devel
+
+    if args.abicc:
+        abicc_cfg = getattr(args, "_abicc_cfg", {})
+        if not abicc_cfg.get("enabled", False):
+            print("  [abicc] ABICC disabled in config for this product — skipping")
+            args.abicc = False
+        else:
+            from abi_scanner.abicc_backend import AbiccBackend as _AbiccBackend
+            _abicc_backend = _AbiccBackend()
+            _abicc_timeout = args.abicc_timeout if args.abicc_timeout is not None else abicc_cfg.get("timeout_sec", 300)
+            _abicc_devel_pattern = abicc_cfg.get("devel_pkg_pattern", "")
+            _abicc_headers_subpath_tpl = abicc_cfg.get("headers_subpath", "")
+            _abicc_skip_headers = abicc_cfg.get("skip_headers", [])
+            print(f"  [abicc] enabled, devel_pattern={_abicc_devel_pattern}")
+            # S1: pre-build devel map once (avoid fetching APT index on every loop iteration)
+            _abicc_devel_map = {}
+            if _abicc_devel_pattern:
+                _apt_idx_url = args.apt_packages_url or (args.apt_base_url.rstrip("/") + "/dists/all/main/binary-amd64/Packages.gz")
+                _abicc_devel_rows = get_apt_package_versions(_abicc_devel_pattern, _apt_idx_url)
+                _abicc_devel_map = {v: fn for v, fn in _abicc_devel_rows}
+
     for i in range(len(versions) - 1):
         old_ver, new_ver = versions[i], versions[i+1]
         if args.verbose:
@@ -447,6 +574,39 @@ def main():
                 extract_dir = download_and_extract_apt(ver, filename, cache_dir, args.apt_base_url, args.verbose)
                 if not extract_dir:
                     continue
+                # Also download devel package for ABICC if needed
+                if args.abicc and _abicc_devel_pattern and ver not in abicc_extract_dirs:
+                    _devel_fn = _abicc_devel_map.get(ver)
+                    if _devel_fn:
+                        # Use devel-specific extract dir (separate from runtime)
+                        _deb_name = Path(_devel_fn).name
+                        _deb_path = cache_dir / f"apt_{_deb_name}"
+                        _devel_extract = cache_dir / f"apt_devel_extract_{ver}"
+                        if not _deb_path.exists():
+                            _url = f"{args.apt_base_url}/{_devel_fn}"
+                            if args.verbose:
+                                print(f"  [abicc] downloading devel: {_url}")
+                            try:
+                                _urllib_req.urlretrieve(_url, _deb_path)
+                            except Exception as _de:
+                                print(f"  [abicc] devel download failed: {_de}", file=sys.stderr)
+                                _deb_path = None
+                        if _deb_path and _deb_path.exists():
+                            if not _devel_extract.exists():
+                                _devel_extract.mkdir(parents=True)
+                                _extract_r = subprocess.run(["dpkg-deb", "-x", str(_deb_path), str(_devel_extract)], capture_output=True)
+                                if _extract_r.returncode != 0:
+                                    print(f"  [abicc] dpkg-deb failed: {_extract_r.stderr.decode()[:200]}", file=sys.stderr)
+                                    import shutil as _sh; _sh.rmtree(_devel_extract, ignore_errors=True)
+                                else:
+                                    abicc_extract_dirs[ver] = _devel_extract
+                            elif _devel_extract.exists():
+                                abicc_extract_dirs[ver] = _devel_extract
+                                if args.verbose:
+                                    print(f"  [abicc] devel extracted: {_devel_extract}")
+                    else:
+                        if args.verbose:
+                            print(f"  [abicc] no devel pkg found for version {ver}")
                 lib = find_library_apt(extract_dir, args.library_name or args.package, args.verbose)
                 if not lib:
                     if args.verbose:
@@ -482,7 +642,52 @@ def main():
         exit_code, stats, diff_stdout = compare_abi(old_abi, new_abi, sup,
                                        classifier if (args.track_preview or args.json) else None,
                                        args.verbose)
+
+        # Run ABICC if requested
+        abicc_result = None
+        if args.abicc:
+            _old_devel = abicc_extract_dirs.get(old_ver)
+            _new_devel = abicc_extract_dirs.get(new_ver)
+            if _old_devel and _new_devel:
+                # Libs always come from runtime extract dirs
+                _rt_old = cache_dir / f"apt_extract_{old_ver}"
+                _rt_new = cache_dir / f"apt_extract_{new_ver}"
+                _old_lib = find_library_apt(_rt_old, args.library_name or args.package, args.verbose) if _rt_old.exists() else None
+                _new_lib = find_library_apt(_rt_new, args.library_name or args.package, args.verbose) if _rt_new.exists() else None
+                _old_headers = _resolve_headers(_old_devel, old_ver, _abicc_headers_subpath_tpl)
+                _new_headers = _resolve_headers(_new_devel, new_ver, _abicc_headers_subpath_tpl)
+                if _old_lib and _new_lib:
+                    _abicc_work = cache_dir / "abicc_work"
+                    try:
+                        abicc_result = _abicc_backend.run(
+                            old_version=old_ver, old_lib_path=_old_lib, old_headers_path=_old_headers,
+                            new_version=new_ver, new_lib_path=_new_lib, new_headers_path=_new_headers,
+                            library_name=args.library_name or args.package,
+                            skip_headers=_abicc_skip_headers,
+                            work_dir=_abicc_work,
+                            timeout=_abicc_timeout,
+                        )
+                        if abicc_result.error:
+                            print(f"  [abicc] warning: {abicc_result.error}", file=sys.stderr)
+                    except Exception as _abicc_exc:
+                        print(f"  [abicc] exception: {_abicc_exc}", file=sys.stderr)
+                else:
+                    print(f"  [abicc] libs not found for {old_ver}/{new_ver} — skipping ABICC", file=sys.stderr)
+            else:
+                if args.verbose:
+                    print(f"  [abicc] devel dirs missing for {old_ver}/{new_ver} — skipping")
+
         status = {0:"✅ NO_CHANGE", 4:"✅ COMPATIBLE", 8:"⚠️  INCOMPAT", 12:"❌ BREAKING"}.get(exit_code, f"?({exit_code})")
+        if args.abicc and abicc_result and abicc_result.error:
+            status = status + " [ABICC:⚠️skipped]"
+        elif args.abicc and not abicc_result:
+            status = status + " [ABICC:⚠️skipped]"
+        if args.abicc and abicc_result and not abicc_result.error:
+            combined = _combined_status(exit_code, abicc_result, old_ver, new_ver)
+            status_emoji = {"NO_CHANGE": "✅ NO_CHANGE", "COMPATIBLE": "✅ COMPATIBLE",
+                            "INCOMPATIBLE": "⚠️ INCOMPAT", "BREAKING": "🔴 BREAKING",
+                            "SOURCE_BREAK": "🟠 SOURCE_BREAK", "BINARY_BREAK": "🔴 BINARY_BREAK", "ELF_INTERNAL": "⚠️ ELF_INTERNAL"}.get(combined, combined)
+            status = status_emoji + f" [Bin:{abicc_result.binary_compat:.1f}% Src:{abicc_result.source_compat:.1f}%]"
         pub = stats.get("public", {"removed": 0, "added": 0})
         line = f"{status} | {old_ver} → {new_ver} | public: -{pub['removed']} +{pub['added']}"
         if args.track_preview:
@@ -490,8 +695,20 @@ def main():
             itn = stats.get("internal", {"removed": 0, "added": 0})
             line += f" | preview: -{prv['removed']} +{prv['added']} | internal: -{itn['removed']} +{itn['added']}"
         print(line)
-        results.append({"old": old_ver, "new": new_ver, "exit_code": exit_code,
-                         "stats": stats, "old_abi": str(old_abi), "new_abi": str(new_abi), "stdout": diff_stdout})
+        _res = {"old": old_ver, "new": new_ver, "exit_code": exit_code,
+                "stats": stats, "old_abi": str(old_abi), "new_abi": str(new_abi), "stdout": diff_stdout}
+        if abicc_result and not abicc_result.error:
+            _res["abicc"] = {
+                "binary_compat": abicc_result.binary_compat,
+                "source_compat": abicc_result.source_compat,
+                "binary_problems": abicc_result.binary_problems,
+                "source_problems": abicc_result.source_problems,
+                "added_symbols": abicc_result.added_symbols,
+                "removed_symbols": abicc_result.removed_symbols,
+                "removed_symbol_names": abicc_result.removed_symbol_names[:50],
+                "type_changes": abicc_result.type_changes[:30],
+            }
+        results.append(_res)
 
     # Summary
     print()
@@ -530,13 +747,29 @@ def main():
             "comparisons": []
         }
         for r in results:
+            _base_status = {0: "NO_CHANGE", 4: "COMPATIBLE", 8: "INCOMPATIBLE", 12: "BREAKING"}.get(r["exit_code"], f"UNKNOWN({r['exit_code']})")
+            _ar = r.get("abicc")
+            if _ar:
+                _has_source_break = _ar["source_compat"] < 100.0 or _ar["source_problems"] > 0
+                _has_binary_break = _ar["binary_compat"] < 100.0 or _ar["binary_problems"] > 0
+                if _has_source_break or _has_binary_break:
+                    _combined = "BREAKING" if _base_status == "BREAKING" else "SOURCE_BREAK"
+                elif _base_status == "BREAKING":
+                    _combined = "ELF_INTERNAL"
+                else:
+                    _combined = _base_status
+            else:
+                _combined = _base_status
             comp = {
                 "old_version": r["old"],
                 "new_version": r["new"],
                 "exit_code": r["exit_code"],
-                "status": {0: "NO_CHANGE", 4: "COMPATIBLE", 8: "INCOMPATIBLE", 12: "BREAKING"}.get(r["exit_code"], f"UNKNOWN({r['exit_code']})"),
+                "status": _combined,
+                "abidiff_status": _base_status,
                 "stats": r["stats"]
             }
+            if _ar:
+                comp["abicc"] = _ar
             if r.get("stdout") and r["exit_code"] in (4, 8, 12):
                 lists = extract_symbol_lists(r["stdout"], classifier)
                 comp["symbols"] = {}

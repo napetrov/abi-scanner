@@ -131,6 +131,27 @@ apt:compiler
 | 8 | Incompatible changes | major only |
 | 12 | Breaking + additions | major only |
 
+
+## ABICC Integration (Type-Level ABI Analysis)
+
+Use `--abicc` to run `abi-compliance-checker` alongside abidiff for type-level ABI checking:
+
+```bash
+python scripts/compare_all_history.py --config config/package_configs/dnnl.yaml --source apt --abicc
+```
+
+Combined verdict statuses:
+- ✅ `NO_CHANGE` — no symbols changed (exact same)
+- ✅ `COMPATIBLE` — only additive changes (new symbols), backward-compatible
+- ⚠️ `ELF_INTERNAL` — abidiff found symbol changes, ABICC confirms no type-level break (likely internal symbols, not public API)
+- 🟠 `SOURCE_BREAK` — ABICC found source-level incompatibility not caught by abidiff
+- 🔴 `BINARY_BREAK` — ABICC found binary-level break (vtable, layout) not caught by abidiff
+- 🔴 `BREAKING` — breaking change confirmed by both tools
+
+Requires: `apt install abi-compliance-checker`  
+Products with ABICC enabled: `dnnl`, `mkl`, `tbb`, `level_zero`  
+Products without ABICC (SYCL API): `onedal`, `oneccl`, `compiler`, `igc`
+
 ## License
 
 MIT License — see LICENSE file.

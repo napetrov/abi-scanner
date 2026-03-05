@@ -33,14 +33,24 @@ public_namespaces:
 
 private_patterns:
   namespace:
-    - ".*::detail::.*"
-    - ".*::backend::.*"
-    - ".*::internal::.*"
-    - ".*::v[0-9]+::.*"
+    - .*::detail::.*
+    - .*::backend::.*
+    - .*::internal::.*
+    - .*::v[0-9]+::.*
   symbol:
-    - "^mkl_.*"
-    - "^_.*"
-    - "^tbb::detail::.*"
-    - "^daal::.*::internal::.*"
-    - "^__intel_.*"
-    - "^cdecl_.*"
+    - ^mkl_.*
+    - ^_.*
+    - ^tbb::detail::.*
+    - ^daal::.*::internal::.*
+    - ^__intel_.*
+    - ^cdecl_.*
+
+abicc:
+  enabled: true
+  timeout_sec: 300
+  devel_pkg_pattern: '^intel-oneapi-dal-devel-2025\.\d+$'
+  headers_subpath: 'opt/intel/oneapi/dal/{version}/include'
+  skip_headers:
+    - sycl.hpp
+    - oneapi/dal/backend/interop/sycl.hpp
+    - oneapi/dal/backend/interop/sycl_utils.hpp

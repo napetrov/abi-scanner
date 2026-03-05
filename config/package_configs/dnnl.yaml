@@ -22,3 +22,30 @@ private_patterns:
     - '^_.*'
     - '^__.*'
     - '^dnnl_impl_.*'
+
+abicc:
+  enabled: true
+  timeout_sec: 300
+  devel_pkg_pattern: '^intel-oneapi-dnnl-devel-2025\.\d+$'
+  headers_subpath: 'opt/intel/oneapi/dnnl/{version}/include'
+  skip_headers:
+    - dnnl_sycl.h
+    - dnnl_sycl.hpp
+    - dnnl_sycl_types.h
+    - dnnl_ocl.h
+    - dnnl_ocl.hpp
+    - dnnl_ocl_types.h
+    - dnnl_graph_sycl.h
+    - dnnl_graph_sycl.hpp
+    - dnnl_graph_ocl.h
+    - dnnl_graph_ocl.hpp
+    - oneapi/dnnl/dnnl_sycl.h
+    - oneapi/dnnl/dnnl_sycl.hpp
+    - oneapi/dnnl/dnnl_sycl_types.h
+    - oneapi/dnnl/dnnl_ocl.h
+    - oneapi/dnnl/dnnl_ocl.hpp
+    - oneapi/dnnl/dnnl_ocl_types.h
+    - oneapi/dnnl/dnnl_graph_sycl.h
+    - oneapi/dnnl/dnnl_graph_sycl.hpp
+    - oneapi/dnnl/dnnl_graph_ocl.h
+    - oneapi/dnnl/dnnl_graph_ocl.hpp
