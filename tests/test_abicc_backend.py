@@ -41,25 +41,28 @@ class TestCombinedStatus:
         assert _combined_status(4, r) == "SOURCE_BREAK"
 
     def test_source_break_when_binary_compat_low(self):
+        # binary-only break (source still 100%) -> BINARY_BREAK
         r = _make_abicc(bin=90.0)
-        assert _combined_status(4, r) == "SOURCE_BREAK"
+        assert _combined_status(4, r) == "BINARY_BREAK"
 
     def test_binary_break_flag_via_problems(self):
+        # binary problems only (no source break) -> BINARY_BREAK
         r = _make_abicc(bin_prob=3)
-        assert _combined_status(4, r) == "SOURCE_BREAK"
+        assert _combined_status(4, r) == "BINARY_BREAK"
 
     def test_breaking_plus_abicc_source_break_stays_breaking(self):
         r = _make_abicc(src=80.0)
         assert _combined_status(12, r) == "BREAKING"
 
-    def test_elf_internal_when_abidiff_breaking_abicc_clean(self, capsys):
+    def test_elf_internal_when_abidiff_breaking_abicc_clean(self, caplog):
         # abidiff=BREAKING (12) but ABICC says 100% clean → ELF_INTERNAL + warning
+        import logging
         r = _make_abicc()
-        result = _combined_status(12, r, old_ver="1.0", new_ver="1.1")
+        with caplog.at_level(logging.WARNING):
+            result = _combined_status(12, r, old_ver="1.0", new_ver="1.1")
         assert result == "ELF_INTERNAL"
-        captured = capsys.readouterr()
-        assert "ELF_INTERNAL" in captured.err
-        assert "Manual review recommended" in captured.err
+        assert "ELF_INTERNAL" in caplog.text
+        assert "Manual review recommended" in caplog.text
 
     def test_no_change_when_both_clean(self):
         r = _make_abicc()
@@ -69,6 +72,16 @@ class TestCombinedStatus:
         r = _make_abicc()
         assert _combined_status(4, r) == "COMPATIBLE"
 
+
+    def test_binary_break_vs_source_break(self):
+        # Both source AND binary break -> SOURCE_BREAK (source is primary)
+        r = _make_abicc(src=90.0, bin=80.0)
+        assert _combined_status(4, r) == "SOURCE_BREAK"
+
+    def test_binary_only_break_returns_binary_break(self):
+        # Only binary break (source 100%) -> BINARY_BREAK
+        r = _make_abicc(src=100.0, bin=85.0)
+        assert _combined_status(4, r) == "BINARY_BREAK"
 
 # ---------------------------------------------------------------------------
 # _parse_html_report tests
@@ -125,6 +138,32 @@ class TestParseHtmlReport:
         assert result.source_compat == 100.0
         assert result.removed_symbol_names == []
 
+
+
+# ---------------------------------------------------------------------------
+# _write_xml_descriptor tests
+# ---------------------------------------------------------------------------
+
+def test_xml_descriptor_has_root_element(tmp_path):
+    from abi_scanner.abicc_backend import _write_xml_descriptor
+    out = tmp_path / "desc.xml"
+    _write_xml_descriptor(out, "1.0", Path("/lib/libfoo.so"), Path("/include"), ["sycl.h"])
+    content = out.read_text()
+    assert content.startswith("<descriptor>")
+    assert content.strip().endswith("</descriptor>")
+    assert "<version>1.0</version>" in content
+    assert "<skip_headers>" in content
+    assert "sycl.h" in content
+
+
+def test_xml_descriptor_escapes_skip_headers(tmp_path):
+    from abi_scanner.abicc_backend import _write_xml_descriptor
+    out = tmp_path / "desc.xml"
+    _write_xml_descriptor(out, "1.0", Path("/lib/libfoo.so"), Path("/include"), ["a&b.h", "<c>.h"])
+    content = out.read_text()
+    assert "&amp;" in content
+    assert "&lt;" in content
+    assert "<descriptor>" in content
 
 # ---------------------------------------------------------------------------
 # AbiccBackend.run() — tool not in PATH

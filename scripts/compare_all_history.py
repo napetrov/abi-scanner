@@ -35,6 +35,9 @@ def _get_micromamba() -> str:
         _MICROMAMBA_CACHE = _find_micromamba()
     return _MICROMAMBA_CACHE
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 try:
     import yaml as _yaml
 except ImportError:
@@ -383,13 +386,16 @@ def _resolve_headers(devel_dir, ver, tpl):
     if _tpl_prefix:
         _candidates = list((devel_dir / _tpl_prefix).parent.glob("*")) if "{version}" in tpl else []
         if _candidates:
-            return sorted(_candidates)[-1] / (tpl.split("{version}")[-1].lstrip("/") if "{version}" in tpl else "")
+            # Sort by version-aware key to avoid lexicographic issues (e.g. 1.10 > 1.9)
+            def _ver_key(p):
+                parts = re.split(r'[.\-]', p.name)
+                return [int(x) if x.isdigit() else x for x in parts]
+            best = sorted(_candidates, key=_ver_key)[-1]
+            suffix = tpl.split("{version}")[-1].lstrip("/") if "{version}" in tpl else ""
+            return best / suffix if suffix else best
     fallback = devel_dir / tpl.format(version=_ver_major_minor)
     if not fallback.exists():
-        import logging as _log
-        _log.getLogger(__name__).warning(
-            "[abicc] headers path not found for version %s: %s", ver, fallback
-        )
+        logger.warning("[abicc] headers path not found for version %s: %s", ver, fallback)
         return devel_dir
     return fallback
 
@@ -404,14 +410,15 @@ def _combined_status(abidiff_ec, abicc_r, old_ver=None, new_ver=None):
     if has_source_break or has_binary_break:
         if abidiff_status == "BREAKING":
             return "BREAKING"
-        # abidiff=COMPATIBLE/INCOMPATIBLE but ABICC found source/binary-level changes
+        # Distinguish binary-only vs source-level breaks
+        if has_binary_break and not has_source_break:
+            return "BINARY_BREAK"
         return "SOURCE_BREAK"
     if abidiff_status == "BREAKING":
         _pair = f"{old_ver}→{new_ver}" if old_ver and new_ver else "unknown"
-        print(
-            f"  [abicc] ⚠️  ELF_INTERNAL: abidiff found breaks that ABICC could not confirm ({_pair}). "
-            f"Manual review recommended for template/noexcept changes.",
-            file=sys.stderr
+        logger.warning(
+            "[abicc] ELF_INTERNAL: abidiff found breaks ABICC could not confirm (%s). "
+            "Manual review recommended for template/noexcept changes.", _pair
         )
         return "ELF_INTERNAL"
     return abidiff_status
@@ -534,7 +541,7 @@ def main():
         else:
             from abi_scanner.abicc_backend import AbiccBackend as _AbiccBackend
             _abicc_backend = _AbiccBackend()
-            _abicc_timeout = args.abicc_timeout or abicc_cfg.get("timeout_sec", 300)
+            _abicc_timeout = args.abicc_timeout if args.abicc_timeout is not None else abicc_cfg.get("timeout_sec", 300)
             _abicc_devel_pattern = abicc_cfg.get("devel_pkg_pattern", "")
             _abicc_headers_subpath_tpl = abicc_cfg.get("headers_subpath", "")
             _abicc_skip_headers = abicc_cfg.get("skip_headers", [])
@@ -679,7 +686,7 @@ def main():
             combined = _combined_status(exit_code, abicc_result, old_ver, new_ver)
             status_emoji = {"NO_CHANGE": "✅ NO_CHANGE", "COMPATIBLE": "✅ COMPATIBLE",
                             "INCOMPATIBLE": "⚠️ INCOMPAT", "BREAKING": "🔴 BREAKING",
-                            "SOURCE_BREAK": "🟠 SOURCE_BREAK", "ELF_INTERNAL": "⚠️ ELF_INTERNAL"}.get(combined, combined)
+                            "SOURCE_BREAK": "🟠 SOURCE_BREAK", "BINARY_BREAK": "🔴 BINARY_BREAK", "ELF_INTERNAL": "⚠️ ELF_INTERNAL"}.get(combined, combined)
             status = status_emoji + f" [Bin:{abicc_result.binary_compat:.1f}% Src:{abicc_result.source_compat:.1f}%]"
         pub = stats.get("public", {"removed": 0, "added": 0})
         line = f"{status} | {old_ver} → {new_ver} | public: -{pub['removed']} +{pub['added']}"

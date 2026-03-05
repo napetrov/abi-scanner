@@ -62,13 +62,18 @@ def _parse_html_report(html_path: Path) -> AbiccResult:
     if removed_m:
         result.removed_symbols = int(removed_m.group(1))
 
-    # Find removed symbol names using ABICC's actual span class
-    iname_matches = re.findall(r'<span[^>]*class=["\']iname["\'][^>]*>(.*?)</span>', html, re.DOTALL)
-    for m in iname_matches[:100]:
-        # Strip HTML tags
-        sym = re.sub(r'<[^>]+>', '', m).strip()
-        if sym and len(sym) > 3:
-            result.removed_symbol_names.append(sym)
+    # Find removed symbol names - search within Source_Removed / Binary_Removed sections only
+    removed_section = re.search(
+        r'<a\s+name=["\']?(?:Source_Removed|Binary_Removed)["\']?[^>]*>(.*?)(?=<a\s+name=|</body>)',
+        html, re.DOTALL | re.IGNORECASE
+    )
+    if removed_section:
+        section_html = removed_section.group(1)
+        iname_matches = re.findall(r'<span[^>]*class=["\']iname["\'][^>]*>(.*?)</span>', section_html, re.DOTALL)
+        for m in iname_matches[:100]:
+            sym = re.sub(r'<[^>]+>', '', m).strip()
+            if sym and len(sym) > 3:
+                result.removed_symbol_names.append(sym)
 
     # Extract type changes from Source_Changed section
     src_changed_match = re.search(
@@ -93,13 +98,15 @@ def _write_xml_descriptor(
     headers_path: Path,
     skip_headers: list[str],
 ) -> None:
-    skip_str = "\n".join(skip_headers) if skip_headers else ""
+    skip_str = "\n".join(_xml_escape(h) for h in skip_headers) if skip_headers else ""
     skip_xml = f"  <skip_headers>\n{skip_str}\n  </skip_headers>\n" if skip_str else ""
     xml = (
-        f"<version>{_xml_escape(version)}</version>\n"
-        f"<headers>{_xml_escape(str(headers_path))}</headers>\n"
+        f"<descriptor>\n"
+        f"  <version>{_xml_escape(version)}</version>\n"
+        f"  <headers>{_xml_escape(str(headers_path))}</headers>\n"
         f"{skip_xml}"
-        f"<libs>{_xml_escape(str(lib_path))}</libs>\n"
+        f"  <libs>{_xml_escape(str(lib_path))}</libs>\n"
+        f"</descriptor>\n"
     )
     path.write_text(xml, encoding="utf-8")
 

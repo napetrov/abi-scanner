@@ -141,10 +141,12 @@ python scripts/compare_all_history.py --config config/package_configs/dnnl.yaml 
 ```
 
 Combined verdict statuses:
-- ✅ `CLEAN` / `COMPATIBLE` — both tools agree no issues
-- ⚠️ `ELF_INTERNAL` — abidiff found symbol changes, ABICC confirms no type-level break (likely internal symbols)
-- 🟠 `SOURCE_BREAK` — ABICC found source/type-level incompatibility (abidiff may not have caught it)
-- 🔴 `BREAKING` — both tools confirm breaking change
+- ✅ `NO_CHANGE` — no symbols changed (exact same)
+- ✅ `COMPATIBLE` — only additive changes (new symbols), backward-compatible
+- ⚠️ `ELF_INTERNAL` — abidiff found symbol changes, ABICC confirms no type-level break (likely internal symbols, not public API)
+- 🟠 `SOURCE_BREAK` — ABICC found source-level incompatibility not caught by abidiff
+- 🔴 `BINARY_BREAK` — ABICC found binary-level break (vtable, layout) not caught by abidiff
+- 🔴 `BREAKING` — breaking change confirmed by both tools
 
 Requires: `apt install abi-compliance-checker`  
 Products with ABICC enabled: `dnnl`, `mkl`, `tbb`, `level_zero`  
