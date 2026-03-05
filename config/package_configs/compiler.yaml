@@ -36,3 +36,6 @@ private_patterns:
     - "^_.*"
     - "^__.*"
     - "^mkl_.*"
+
+abicc:
+  enabled: false  # skip for now (complex SYCL API or no devel pkg available)

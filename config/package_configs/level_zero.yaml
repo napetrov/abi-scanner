@@ -16,3 +16,9 @@ private_patterns:
   symbol:
   - ^_.*
   - ^__.*
+
+abicc:
+  enabled: true
+  devel_pkg_pattern: '^level-zero-devel.*$'
+  headers_subpath: 'usr/include/level_zero'
+  skip_headers: []

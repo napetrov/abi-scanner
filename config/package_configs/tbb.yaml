@@ -27,3 +27,9 @@ private_patterns:
     - '^_.*'
     - '^__.*'
     - '^__TBB.*'
+
+abicc:
+  enabled: true
+  devel_pkg_pattern: '^intel-oneapi-tbb-devel-2021\.\d+$'
+  headers_subpath: 'opt/intel/oneapi/tbb/{version}/include'
+  skip_headers: []
