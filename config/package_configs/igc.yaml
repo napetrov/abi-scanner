@@ -18,4 +18,10 @@ private_patterns:
   - ^igc::.*
 
 abicc:
-  enabled: false  # skip for now (complex SYCL API or no devel pkg available)
+  enabled: true
+  timeout_sec: 300
+  devel_pkg_pattern: '^libigc-dev$'
+  headers_subpath: 'usr/include'
+  skip_headers:
+    - sycl.hpp
+    - CL/sycl.hpp

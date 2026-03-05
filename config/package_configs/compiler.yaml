@@ -19,7 +19,7 @@ sources:
   apt:
     base_url: https://apt.repos.intel.com/oneapi
     # Versioned package pattern: intel-oneapi-compiler-dpcpp-cpp-runtime-{major.minor}
-    pkg_pattern: "^intel-oneapi-compiler-dpcpp-cpp-runtime-2025\\.\\d+$"
+    pkg_pattern: ^intel-oneapi-compiler-dpcpp-cpp-runtime-2025\.\d+
     paths:
       lib: opt/intel/oneapi/compiler/{major_minor}/lib
 
@@ -29,13 +29,19 @@ public_namespaces:
 
 private_patterns:
   namespace:
-    - ".*::detail::.*"
-    - ".*::backend::.*"
-    - ".*::internal::.*"
+    - .*::detail::.*
+    - .*::backend::.*
+    - .*::internal::.*
   symbol:
-    - "^_.*"
-    - "^__.*"
-    - "^mkl_.*"
+    - ^_.*
+    - ^__.*
+    - ^mkl_.*
 
 abicc:
-  enabled: false  # skip for now (complex SYCL API or no devel pkg available)
+  enabled: true
+  timeout_sec: 300
+  devel_pkg_pattern: '^intel-oneapi-compiler-dpcpp-cpp-2025\.\d+$'
+  headers_subpath: 'opt/intel/oneapi/compiler/{version}/include'
+  skip_headers:
+    - sycl.hpp
+    - CL/sycl.hpp

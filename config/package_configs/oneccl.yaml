@@ -22,11 +22,18 @@ public_namespaces:
 
 private_patterns:
   namespace:
-    - ".*::detail::.*"
-    - ".*::internal::.*"
+    - .*::detail::.*
+    - .*::internal::.*
   symbol:
-    - "^__.*"
-    - "^_GLOBAL__.*"
+    - ^__.*
+    - ^_GLOBAL__.*
 
 abicc:
-  enabled: false  # skip for now (complex SYCL API or no devel pkg available)
+  enabled: true
+  timeout_sec: 300
+  devel_pkg_pattern: '^intel-oneapi-ccl-devel-2021\..+$'
+  headers_subpath: 'opt/intel/oneapi/ccl/{version}/include'
+  skip_headers:
+    - sycl.hpp
+    - oneapi/ccl/stream/sycl_stream.hpp
+    - oneapi/ccl/kvs/sycl_kvs.hpp
