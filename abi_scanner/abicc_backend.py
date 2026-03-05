@@ -5,11 +5,10 @@ import logging
 import re
 import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Optional
+from xml.sax.saxutils import escape as _xml_escape
 
 logger = logging.getLogger(__name__)
 
@@ -28,109 +27,6 @@ class AbiccResult:
     error: Optional[str] = None
 
 
-class _AbiccHTMLParser(HTMLParser):
-    """Lightweight parser for abi-compliance-checker HTML report."""
-
-    def __init__(self):
-        super().__init__()
-        self.binary_compat: float = 100.0
-        self.source_compat: float = 100.0
-        self.binary_problems: int = 0
-        self.source_problems: int = 0
-        self.added_symbols: int = 0
-        self.removed_symbols: int = 0
-        self.removed_symbol_names: list[str] = []
-        self.type_changes: list[str] = []
-
-        self._current_anchor: str = ""
-        self._capture_next_td: bool = False
-        self._td_depth: int = 0
-        self._in_td: bool = False
-        self._td_text: str = ""
-        self._pending_label: str = ""
-        self._in_removed_section: bool = False
-        self._in_type_section: bool = False
-        self._tag_stack: list[str] = []
-
-        # Regex patterns for percentage and count extraction
-        self._pct_re = re.compile(r"([\d.]+)\s*%")
-        self._int_re = re.compile(r"(\d+)")
-
-    def handle_starttag(self, tag, attrs):
-        attrs_dict = dict(attrs)
-        self._tag_stack.append(tag)
-
-        if tag == "a":
-            name = attrs_dict.get("name", "")
-            self._current_anchor = name
-            if name in ("Source_Removed", "Binary_Removed"):
-                self._in_removed_section = True
-                self._in_type_section = False
-            elif name == "Source_Changed":
-                self._in_type_section = True
-                self._in_removed_section = False
-            else:
-                self._in_removed_section = False
-                self._in_type_section = False
-
-        if tag == "td":
-            self._in_td = True
-            self._td_text = ""
-
-    def handle_endtag(self, tag):
-        if self._tag_stack:
-            self._tag_stack.pop()
-
-        if tag == "td" and self._in_td:
-            self._process_td(self._td_text.strip())
-            self._in_td = False
-            self._td_text = ""
-
-    def handle_data(self, data):
-        if self._in_td:
-            self._td_text += data
-        # Capture symbol names in removed sections
-        if self._in_removed_section:
-            stripped = data.strip()
-            if stripped and not stripped.startswith("<") and len(stripped) > 3:
-                # Filter out pure numeric or percentage values
-                if not re.match(r'^[\d.%\s]+$', stripped):
-                    if stripped not in self.removed_symbol_names:
-                        self.removed_symbol_names.append(stripped)
-        if self._in_type_section:
-            stripped = data.strip()
-            if stripped and len(stripped) > 5:
-                if not re.match(r'^[\d.%\s]+$', stripped):
-                    if stripped not in self.type_changes:
-                        self.type_changes.append(stripped)
-
-    def _process_td(self, text: str):
-        """Try to extract metrics from table cells."""
-        text_lower = text.lower()
-        pct_match = self._pct_re.search(text)
-
-        if "binary compatibility" in text_lower and pct_match:
-            self.binary_compat = float(pct_match.group(1))
-        elif "source compatibility" in text_lower and pct_match:
-            self.source_compat = float(pct_match.group(1))
-        elif "binary" in text_lower and "problem" in text_lower:
-            m = self._int_re.search(text)
-            if m:
-                self.binary_problems = int(m.group(1))
-        elif "source" in text_lower and "problem" in text_lower:
-            m = self._int_re.search(text)
-            if m:
-                self.source_problems = int(m.group(1))
-        elif "added" in text_lower and "symbol" in text_lower:
-            m = self._int_re.search(text)
-            if m:
-                self.added_symbols = int(m.group(1))
-        elif "removed" in text_lower and "symbol" in text_lower:
-            m = self._int_re.search(text)
-            if m:
-                self.removed_symbols = int(m.group(1))
-
-
 def _parse_html_report(html_path: Path) -> AbiccResult:
     """Parse ABICC HTML report and return AbiccResult."""
     result = AbiccResult()
@@ -143,7 +39,6 @@ def _parse_html_report(html_path: Path) -> AbiccResult:
     html = html_path.read_text(encoding="utf-8", errors="replace")
 
     # Fast regex extraction of key metrics from the summary table
-    # Look for patterns like "100%", "Binary compatibility: 97%", etc.
     bin_pct = re.search(r'[Bb]inary\s+[Cc]ompatibility[^<]*?(\d[\d.]*)\s*%', html)
     src_pct = re.search(r'[Ss]ource\s+[Cc]ompatibility[^<]*?(\d[\d.]*)\s*%', html)
     if bin_pct:
@@ -167,20 +62,13 @@ def _parse_html_report(html_path: Path) -> AbiccResult:
     if removed_m:
         result.removed_symbols = int(removed_m.group(1))
 
-    # Extract removed symbol names from Source_Removed section
-    # Look for <a name="Source_Removed"> ... </table>
-    src_removed_match = re.search(
-        r'<a\s+name=["\']?Source_Removed["\']?[^>]*>.*?(<table[^>]*>.*?</table>)',
-        html, re.DOTALL | re.IGNORECASE
-    )
-    if src_removed_match:
-        table_html = src_removed_match.group(1)
-        # Extract symbol names from table cells - look for function/method names
-        syms = re.findall(r'<td[^>]*>\s*([a-zA-Z_][a-zA-Z0-9_:<>*, &~()]+)\s*</td>', table_html)
-        for sym in syms:
-            sym = sym.strip()
-            if sym and len(sym) > 3 and sym not in result.removed_symbol_names:
-                result.removed_symbol_names.append(sym)
+    # Find removed symbol names using ABICC's actual span class
+    iname_matches = re.findall(r'<span[^>]*class=["\']iname["\'][^>]*>(.*?)</span>', html, re.DOTALL)
+    for m in iname_matches[:100]:
+        # Strip HTML tags
+        sym = re.sub(r'<[^>]+>', '', m).strip()
+        if sym and len(sym) > 3:
+            result.removed_symbol_names.append(sym)
 
     # Extract type changes from Source_Changed section
     src_changed_match = re.search(
@@ -205,13 +93,13 @@ def _write_xml_descriptor(
     headers_path: Path,
     skip_headers: list[str],
 ) -> None:
-    skip_str = " ".join(skip_headers) if skip_headers else ""
-    skip_xml = f"  <skip_headers>{skip_str}</skip_headers>\n" if skip_str else ""
+    skip_str = "\n".join(skip_headers) if skip_headers else ""
+    skip_xml = f"  <skip_headers>\n{skip_str}\n  </skip_headers>\n" if skip_str else ""
     xml = (
-        f"<version>{version}</version>\n"
-        f"<headers>{headers_path}</headers>\n"
+        f"<version>{_xml_escape(version)}</version>\n"
+        f"<headers>{_xml_escape(str(headers_path))}</headers>\n"
         f"{skip_xml}"
-        f"<libs>{lib_path}</libs>\n"
+        f"<libs>{_xml_escape(str(lib_path))}</libs>\n"
     )
     path.write_text(xml, encoding="utf-8")
 
@@ -241,6 +129,21 @@ class AbiccBackend:
         old_xml = work_dir / f"old_{old_version}.xml"
         new_xml = work_dir / f"new_{new_version}.xml"
         report_path = work_dir / f"report_{old_version}_vs_{new_version}.html"
+
+        # Cache: skip if report already exists (headers haven't changed)
+        if report_path.exists():
+            logger.info(f"[abicc] using cached report: {report_path}")
+            return _parse_html_report(report_path)
+
+        # Validate paths before running
+        if not old_headers_path.exists():
+            return AbiccResult(error=f"Headers path does not exist: {old_headers_path}")
+        if not new_headers_path.exists():
+            return AbiccResult(error=f"Headers path does not exist: {new_headers_path}")
+        if not old_lib_path.exists():
+            return AbiccResult(error=f"Library not found: {old_lib_path}")
+        if not new_lib_path.exists():
+            return AbiccResult(error=f"Library not found: {new_lib_path}")
 
         try:
             _write_xml_descriptor(old_xml, old_version, old_lib_path, old_headers_path, skip_headers)

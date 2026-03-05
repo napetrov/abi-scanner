@@ -34,7 +34,6 @@ def _get_micromamba() -> str:
     if _MICROMAMBA_CACHE is None:
         _MICROMAMBA_CACHE = _find_micromamba()
     return _MICROMAMBA_CACHE
-import tempfile
 import json
 try:
     import yaml as _yaml
@@ -367,6 +366,57 @@ def print_details(stdout: str, old_ver: str, new_ver: str,
             print_grouped(added, "Added")
 
 
+def _resolve_headers(devel_dir, ver, tpl):
+    """Resolve headers path from template with {version}. (S3: module-level)"""
+    if not tpl:
+        return devel_dir
+    # Try multiple version formats: full, no-build, major.minor
+    _ver_stripped = ver.split("-")[0]  # e.g. 2025.0.0
+    _ver_parts = _ver_stripped.split(".")
+    _ver_major_minor = ".".join(_ver_parts[:2])  # e.g. 2025.0
+    for v in [ver, _ver_stripped, _ver_major_minor]:
+        p = devel_dir / tpl.format(version=v)
+        if p.exists():
+            return p
+    # fallback: find any directory matching pattern
+    _tpl_prefix = tpl.split("{version}")[0] if "{version}" in tpl else ""
+    if _tpl_prefix:
+        _candidates = list((devel_dir / _tpl_prefix).parent.glob("*")) if "{version}" in tpl else []
+        if _candidates:
+            return sorted(_candidates)[-1] / (tpl.split("{version}")[-1].lstrip("/") if "{version}" in tpl else "")
+    fallback = devel_dir / tpl.format(version=_ver_major_minor)
+    if not fallback.exists():
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "[abicc] headers path not found for version %s: %s", ver, fallback
+        )
+        return devel_dir
+    return fallback
+
+
+def _combined_status(abidiff_ec, abicc_r, old_ver=None, new_ver=None):
+    """Combine abidiff and ABICC verdicts into a single status. (S3: module-level)"""
+    abidiff_status = {0: "NO_CHANGE", 4: "COMPATIBLE", 8: "INCOMPATIBLE", 12: "BREAKING"}.get(abidiff_ec, "UNKNOWN")
+    if abicc_r is None or abicc_r.error:
+        return abidiff_status
+    has_source_break = abicc_r.source_compat < 100.0 or abicc_r.source_problems > 0
+    has_binary_break = abicc_r.binary_compat < 100.0 or abicc_r.binary_problems > 0
+    if has_source_break or has_binary_break:
+        if abidiff_status == "BREAKING":
+            return "BREAKING"
+        # abidiff=COMPATIBLE/INCOMPATIBLE but ABICC found source/binary-level changes
+        return "SOURCE_BREAK"
+    if abidiff_status == "BREAKING":
+        _pair = f"{old_ver}→{new_ver}" if old_ver and new_ver else "unknown"
+        print(
+            f"  [abicc] ⚠️  ELF_INTERNAL: abidiff found breaks that ABICC could not confirm ({_pair}). "
+            f"Manual review recommended for template/noexcept changes.",
+            file=sys.stderr
+        )
+        return "ELF_INTERNAL"
+    return abidiff_status
+
+
 def main():
     """Main entry point for ABI comparison workflow."""
     parser = argparse.ArgumentParser(description="Compare ABI across all package versions")
@@ -466,7 +516,6 @@ def main():
 
     results = []
     abicc_extract_dirs = {}  # version -> extract_dir (for --abicc devel pkg)
-    abicc_results_map = {}   # (old_ver, new_ver) -> AbiccResult
 
     # Pre-populate abicc_extract_dirs from already-extracted devel dirs
     if args.abicc:
@@ -487,6 +536,12 @@ def main():
             _abicc_headers_subpath_tpl = abicc_cfg.get("headers_subpath", "")
             _abicc_skip_headers = abicc_cfg.get("skip_headers", [])
             print(f"  [abicc] enabled, devel_pattern={_abicc_devel_pattern}")
+            # S1: pre-build devel map once (avoid fetching APT index on every loop iteration)
+            _abicc_devel_map = {}
+            if _abicc_devel_pattern:
+                _apt_idx_url = args.apt_packages_url or (args.apt_base_url.rstrip("/") + "/dists/all/main/binary-amd64/Packages.gz")
+                _abicc_devel_rows = get_apt_package_versions(_abicc_devel_pattern, _apt_idx_url)
+                _abicc_devel_map = {v: fn for v, fn in _abicc_devel_rows}
 
     for i in range(len(versions) - 1):
         old_ver, new_ver = versions[i], versions[i+1]
@@ -511,31 +566,31 @@ def main():
                     continue
                 # Also download devel package for ABICC if needed
                 if args.abicc and _abicc_devel_pattern and ver not in abicc_extract_dirs:
-                    _devel_rows = get_apt_package_versions(_abicc_devel_pattern,
-                        (args.apt_packages_url or (args.apt_base_url.rstrip("/") + "/dists/all/main/binary-amd64/Packages.gz")))
-                    _devel_map = {v: f for v, f in _devel_rows}
-                    _devel_fn = _devel_map.get(ver)
+                    _devel_fn = _abicc_devel_map.get(ver)
                     if _devel_fn:
                         # Use devel-specific extract dir (separate from runtime)
                         _deb_name = Path(_devel_fn).name
                         _deb_path = cache_dir / f"apt_{_deb_name}"
                         _devel_extract = cache_dir / f"apt_devel_extract_{ver}"
                         if not _deb_path.exists():
-                            import urllib.request as _ur
                             _url = f"{args.apt_base_url}/{_devel_fn}"
                             if args.verbose:
                                 print(f"  [abicc] downloading devel: {_url}")
                             try:
-                                _ur.urlretrieve(_url, _deb_path)
+                                _urllib_req.urlretrieve(_url, _deb_path)
                             except Exception as _de:
                                 print(f"  [abicc] devel download failed: {_de}", file=sys.stderr)
                                 _deb_path = None
                         if _deb_path and _deb_path.exists():
                             if not _devel_extract.exists():
                                 _devel_extract.mkdir(parents=True)
-                                import subprocess as _dsp
-                                _dsp.run(["dpkg-deb", "-x", str(_deb_path), str(_devel_extract)], capture_output=True)
-                            if _devel_extract.exists():
+                                _extract_r = subprocess.run(["dpkg-deb", "-x", str(_deb_path), str(_devel_extract)], capture_output=True)
+                                if _extract_r.returncode != 0:
+                                    print(f"  [abicc] dpkg-deb failed: {_extract_r.stderr.decode()[:200]}", file=sys.stderr)
+                                    import shutil as _sh; _sh.rmtree(_devel_extract, ignore_errors=True)
+                                else:
+                                    abicc_extract_dirs[ver] = _devel_extract
+                            elif _devel_extract.exists():
                                 abicc_extract_dirs[ver] = _devel_extract
                                 if args.verbose:
                                     print(f"  [abicc] devel extracted: {_devel_extract}")
@@ -584,26 +639,6 @@ def main():
             _old_devel = abicc_extract_dirs.get(old_ver)
             _new_devel = abicc_extract_dirs.get(new_ver)
             if _old_devel and _new_devel:
-                def _resolve_headers(devel_dir, ver, tpl):
-                    """Resolve headers path from template with {version}."""
-                    if not tpl:
-                        return devel_dir
-                    # Try multiple version formats: full, no-build, major.minor
-                    _ver_stripped = ver.split("-")[0]  # e.g. 2025.0.0
-                    _ver_parts = _ver_stripped.split(".")
-                    _ver_major_minor = ".".join(_ver_parts[:2])  # e.g. 2025.0
-                    for v in [ver, _ver_stripped, _ver_major_minor]:
-                        p = devel_dir / tpl.format(version=v)
-                        if p.exists():
-                            return p
-                    # fallback: find any directory matching pattern
-                    _tpl_prefix = tpl.split("{version}")[0] if "{version}" in tpl else ""
-                    if _tpl_prefix:
-                        _candidates = list((devel_dir / _tpl_prefix).parent.glob("*")) if "{version}" in tpl else []
-                        if _candidates:
-                            return sorted(_candidates)[-1] / (tpl.split("{version}")[-1].lstrip("/") if "{version}" in tpl else "")
-                    return devel_dir / tpl.format(version=_ver_major_minor)
-
                 # Libs always come from runtime extract dirs
                 _rt_old = cache_dir / f"apt_extract_{old_ver}"
                 _rt_new = cache_dir / f"apt_extract_{new_ver}"
@@ -623,8 +658,6 @@ def main():
                         )
                         if abicc_result.error:
                             print(f"  [abicc] warning: {abicc_result.error}", file=sys.stderr)
-                        else:
-                            abicc_results_map[(old_ver, new_ver)] = abicc_result
                     except Exception as _abicc_exc:
                         print(f"  [abicc] exception: {_abicc_exc}", file=sys.stderr)
                 else:
@@ -633,25 +666,12 @@ def main():
                 if args.verbose:
                     print(f"  [abicc] devel dirs missing for {old_ver}/{new_ver} — skipping")
 
-        def _combined_status(abidiff_ec, abicc_r):
-            abidiff_status = {0: "NO_CHANGE", 4: "COMPATIBLE", 8: "INCOMPATIBLE", 12: "BREAKING"}.get(abidiff_ec, "UNKNOWN")
-            if abicc_r is None or abicc_r.error:
-                return abidiff_status
-            has_type_break = abicc_r.source_compat < 100.0 or abicc_r.source_problems > 0
-            if has_type_break:
-                if abidiff_status == "BREAKING":
-                    return "BREAKING"
-                return "TYPE_BREAK"
-            if abidiff_status == "BREAKING":
-                return "ELF_INTERNAL"
-            return abidiff_status
-
         status = {0:"✅ NO_CHANGE", 4:"✅ COMPATIBLE", 8:"⚠️  INCOMPAT", 12:"❌ BREAKING"}.get(exit_code, f"?({exit_code})")
         if args.abicc and abicc_result and not abicc_result.error:
-            combined = _combined_status(exit_code, abicc_result)
+            combined = _combined_status(exit_code, abicc_result, old_ver, new_ver)
             status_emoji = {"NO_CHANGE": "✅ NO_CHANGE", "COMPATIBLE": "✅ COMPATIBLE",
                             "INCOMPATIBLE": "⚠️ INCOMPAT", "BREAKING": "🔴 BREAKING",
-                            "TYPE_BREAK": "🔴 TYPE_BREAK", "ELF_INTERNAL": "⚠️ ELF_INTERNAL"}.get(combined, combined)
+                            "SOURCE_BREAK": "🔴 SOURCE_BREAK", "ELF_INTERNAL": "⚠️ ELF_INTERNAL"}.get(combined, combined)
             status = status_emoji + f" [Bin:{abicc_result.binary_compat:.1f}% Src:{abicc_result.source_compat:.1f}%]"
         pub = stats.get("public", {"removed": 0, "added": 0})
         line = f"{status} | {old_ver} → {new_ver} | public: -{pub['removed']} +{pub['added']}"
@@ -715,9 +735,10 @@ def main():
             _base_status = {0: "NO_CHANGE", 4: "COMPATIBLE", 8: "INCOMPATIBLE", 12: "BREAKING"}.get(r["exit_code"], f"UNKNOWN({r['exit_code']})")
             _ar = r.get("abicc")
             if _ar:
-                _has_tb = _ar["source_compat"] < 100.0 or _ar["source_problems"] > 0
-                if _has_tb:
-                    _combined = "BREAKING" if _base_status == "BREAKING" else "TYPE_BREAK"
+                _has_source_break = _ar["source_compat"] < 100.0 or _ar["source_problems"] > 0
+                _has_binary_break = _ar["binary_compat"] < 100.0 or _ar["binary_problems"] > 0
+                if _has_source_break or _has_binary_break:
+                    _combined = "BREAKING" if _base_status == "BREAKING" else "SOURCE_BREAK"
                 elif _base_status == "BREAKING":
                     _combined = "ELF_INTERNAL"
                 else:
