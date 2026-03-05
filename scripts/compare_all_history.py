@@ -431,8 +431,9 @@ def main():
         if args.verbose:
             print(f"\nProcessing {old_ver} → {new_ver}")
 
-        old_abi = cache_dir / f"{args.package}_{old_ver}.abi"
-        new_abi = cache_dir / f"{args.package}_{new_ver}.abi"
+        _lib_tag = args.library_name.replace("/", "_").replace(".", "_") if args.library_name else "all"
+        old_abi = cache_dir / f"{args.package}_{_lib_tag}_{old_ver}.abi"
+        new_abi = cache_dir / f"{args.package}_{_lib_tag}_{new_ver}.abi"
 
         for ver, abi_path in [(old_ver, old_abi), (new_ver, new_abi)]:
             if abi_path.exists():
