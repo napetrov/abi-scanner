@@ -141,7 +141,7 @@ python3 scripts/compare_all_history.py
 ```
 
 **Output:**
-```
+```text
 ✅ NO_CHANGE  | 2025.9.0   → 2025.10.0  | removed=0    added=0
 ❌ BREAKING   | 2025.1.0   → 2025.2.0   | removed=7    added=3
 ...

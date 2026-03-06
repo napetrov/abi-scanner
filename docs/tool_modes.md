@@ -39,7 +39,7 @@ and limitations.
         (no compiler needed — abi-dumper reads binary directly)
 ```
 
-> **Intel production default:** Mode 1 + ABICC+headers (ABICC Usage #2).  
+> **Intel production default:** abidiff+headers + ABICC+headers (ABICC Usage #2).  
 > Production `.so` files have no debug info → Usage #1 unavailable.
 
 ---

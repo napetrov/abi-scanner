@@ -123,7 +123,7 @@ abi-scanner/
 
 All `abi-scanner` commands accept packages in `channel:package=version` format:
 
-```
+```text
 channel:package=version
 ```
 
@@ -138,7 +138,7 @@ channel:package=version
 | `dump:` | Pre-saved abidw XML baseline | `dump:~/.abi-snapshots/libfoo.so-2025.2.abi` |
 
 For `list` and `compatible` commands, version is optional:
-```
+```bash
 abi-scanner list intel:oneccl-cpu
 abi-scanner list apt:intel-oneapi-dnnl --apt-index-url <url>
 ```
