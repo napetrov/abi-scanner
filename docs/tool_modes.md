@@ -1,7 +1,18 @@
 # ABI Tool Modes Reference
 
-This document explains the three complementary modes used for ABI analysis in
-`abi-scanner`, when to use each, their requirements, and their limitations.
+This document explains the three modes used for ABI analysis in `abi-scanner`,
+their correct names (as used in ABICC official documentation), requirements,
+and limitations.
+
+---
+
+## Mode Overview
+
+| Mode | Official name | Compiler needed? | Debug info needed? | Headers needed? |
+|------|--------------|:----------------:|:------------------:|:---------------:|
+| abidiff + headers | `abidiff` (libabigail) | ❌ | optional (improves accuracy) | ✅ always |
+| ABICC Usage #2 | Original / headers mode | ✅ **GCC only** | ❌ | ✅ |
+| ABICC Usage #1 | abi-dumper / binary mode | ❌ | ✅ (`-g -Og`) | ❌ (optional) |
 
 ---
 
@@ -10,391 +21,264 @@ This document explains the three complementary modes used for ABI analysis in
 ```
 [Project policy] PUBLIC HEADERS are mandatory for analysis
 │
-├─ headers missing  → fail fast / fetch devel/include package first
+├─ headers missing → fail fast / fetch devel/include package first
 │
 └─ headers available
     │
-    Was the .so compiled with -g (debug symbols) AND built with GCC?
+    Was the .so compiled with -g (debug symbols)?
     │
-    ├─ NO (production/stripped .so, or icpx/clang build)
+    ├─ NO (production/stripped .so)
     │
-    │   Use MODE 1 + MODE 2 (combined verdict)
-    │   abidiff+headers for ELF-level + ABICC+headers for AST-level
-    │   If either reports a break → treat as breaking
+    │   Use abidiff+headers + ABICC Usage #2 (combined verdict)
+    │   Any break from either → flag as ABI-breaking
     │
-    └─ YES (CI/staging GCC debug build)
+    └─ YES (CI/staging debug build)
 
-        Use MODE 1 + MODE 3 (combined verdict)
-        abidiff+headers + ABICC+dump for deepest type precision
-
-                                              Review combined verdict
-                                              Any break from any mode
-                                              → flag release as ABI-breaking
+        Use abidiff+headers + ABICC Usage #1 (combined verdict)
+        Most accurate: DWARF ground truth for types
+        (no compiler needed — abi-dumper reads binary directly)
 ```
+
+> **Intel production default:** Mode 1 + ABICC Usage #2.  
+> Production `.so` files have no debug info → Usage #1 unavailable.
 
 ---
 
-## Mode 1: abidiff (libabigail)
+## abidiff + headers (libabigail)
 
 ### Overview
 
-`abidiff` from the **libabigail** project compares two shared library (`.so`) files
-directly. It reads the ELF symbol table for exported symbols and optionally reads
-DWARF debug sections for type layout information.
+`abidiff` from **libabigail** compares two `.so` files using their ELF symbol tables
+and optionally DWARF debug sections. **We always pass headers** via `--headers-dir`
+to improve type resolution.
 
 ### How it works
 
 ```
 libv1.so ──► abidw --headers-dir include/ ──► v1.xml ──┐
-                                                         ├──► abidiff ──► ABI report
+                                                         ├──► abidiff ──► report
 libv2.so ──► abidw --headers-dir include/ ──► v2.xml ──┘
 ```
-
-`abidw` serializes the ABI into XML; `--headers-dir` adds header context so abidiff
-can resolve type names and catch layout changes even without full DWARF.
 
 ### Requirements
 
 | Requirement | Mandatory? | Notes |
 |-------------|-----------|-------|
-| Two `.so` files | ✅ yes | Core input |
-| Public headers (`--headers-dir`) | ✅ yes (our pipeline) | Greatly improves type resolution; we **always** pass headers |
-| DWARF debug info (`-g`) | ❌ optional | Without it, type layout changes rely on headers alone |
-| Compiler | ❌ no | Not needed |
+| Two `.so` files | ✅ | Core input |
+| Headers (`--headers-dir`) | ✅ our policy | Greatly improves type resolution |
+| DWARF debug info (`-g`) | ❌ optional | Provides additional type layout info |
+| Compiler | ❌ | Not needed |
 
 ### What it catches
 
-- ✅ Symbol removal (function/variable removed from `.so`) → exit code 12
-- ✅ Symbol type change in symbol table (ELF-level)
-- ✅ Type layout changes — struct/class field addition, removal, reorder **with DWARF**
-- ✅ vtable changes **with DWARF** (virtual method addition/removal/reorder)
-- ✅ Return type changes **with DWARF**
-- ✅ Parameter type changes **with DWARF**
-- ✅ Global variable type/size changes **with DWARF**
-- ✅ Enum value changes **with DWARF**
-- ✅ Visibility changes (symbol hidden vs. default)
+- ✅ Symbol removal/addition
+- ✅ Type layout changes (struct/class field changes) — with DWARF or headers
+- ✅ vtable changes — with DWARF
+- ✅ Return type, parameter type changes — with DWARF/headers
+- ✅ Enum value changes
+- ✅ ELF-only symbol changes (visibility, binding)
 
 ### What it misses
 
-- ❌ `noexcept` specifier changes (no DWARF representation)
+- ❌ `noexcept` specifier (not in DWARF or ELF)
 - ❌ `inline` → non-inline ODR changes (inline functions absent from `.so`)
 - ❌ C++ `[[nodiscard]]`, `[[deprecated]]`, `explicit` attribute changes
-- ❌ Template instantiation layout changes **without DWARF**
-- ❌ Dependency ABI leaks (transitive header type changes) **without DWARF**
-- ❌ C++ concepts / requires constraints
-- ❌ Default argument changes
+- ❌ Template instantiation details without DWARF
+- ❌ Dependency ABI leaks (transitive header type changes) without DWARF
 
-### Limitations
+### Usage
 
-1. **Stripped production libraries** — most production `.so` files have DWARF
-   stripped. abidiff degrades to symbol-table-only comparison, missing all type
-   layout changes.
-2. **C++ name mangling opacity** — abidiff can decode some mangled names but
-   complex template signatures may produce confusing output.
-3. **No header context** — abidiff cannot distinguish a deliberate API removal
-   from an internal symbol cleanup.
+```bash
+sudo apt-get install abigail-tools
+
+abidw --headers-dir include/ --out-file v1.xml libv1.so
+abidw --headers-dir include/ --out-file v2.xml libv2.so
+abidiff v1.xml v2.xml
+```
 
 ### Exit codes
 
 | Code | Meaning |
 |------|---------|
 | 0 | No ABI change |
-| 4 | ABI change (type/layout diff, compatible addition) |
+| 4 | ABI change (type/layout diff or compatible addition) |
 | 12 | Breaking change (symbol removed) |
 
-### Usage
-
-```bash
-# Requires libabigail-tools
-sudo apt-get install abigail-tools
-
-# Always pass headers — improves type resolution significantly
-abidw --headers-dir include/ --out-file v1.xml libv1.so
-abidw --headers-dir include/ --out-file v2.xml libv2.so
-abidiff v1.xml v2.xml
-echo "Exit code: $?"
-```
-
 ---
 
-## Mode 2: ABICC Headers-Only
+## ABICC Usage #2 — Original / Headers Mode
+
+> This is what `abi-compliance-checker` calls **USAGE #2 (ORIGINAL)** in its docs.
 
 ### Overview
 
-**ABI Compliance Checker** (`abi-compliance-checker`, ABICC) with **headers only**
-— no `abi-dumper`, no DWARF required. ABICC parses C/C++ headers using an internal
-GCC-based frontend to build an AST and computes type layouts, function signatures,
-and semantic attributes directly from source.
+ABICC receives an XML descriptor pointing to the `.so` and headers directory. It uses
+**GCC** to compile the headers, extract the full C++ AST, compute type layouts, and
+build an ABI dump. Then it compares two such dumps.
 
 ### How it works
 
 ```
-libv1.so + v1 headers ──► ABICC AST parse ──┐
-                                              ├──► semantic diff ──► compliance report
-libv2.so + v2 headers ──► ABICC AST parse ──┘
+OLD.xml (headers + .so) ──► abi-compliance-checker ──► ABI-old.dump ──┐
+                                 (compiles via GCC)                     ├──► report
+NEW.xml (headers + .so) ──► abi-compliance-checker ──► ABI-new.dump ──┘
 ```
-
-The `.so` files are used only for the exported symbol list. Type information comes
-entirely from the headers.
 
 ### Requirements
 
 | Requirement | Mandatory? | Notes |
 |-------------|-----------|-------|
-| Two `.so` files | ✅ yes | For exported symbol list |
-| Public headers | ✅ yes | Core input for type analysis |
-| `abi-compliance-checker` | ✅ yes | `sudo apt-get install abi-compliance-checker` |
-| GCC (header parse) | ✅ yes | Usually already installed |
-| DWARF debug info | ❌ no | Not used in this mode |
-| `abi-dumper` | ❌ no | Not used in this mode |
+| Two `.so` files | ✅ | |
+| Headers | ✅ | The main input for ABI description |
+| `abi-compliance-checker` | ✅ | |
+| **GCC** | ✅ **GCC only** | ABICC calls GCC internally to compile headers. Intel `icpx`/`icc` and Clang are **not supported**. |
+| DWARF debug info | ❌ | Not needed — headers provide type information |
 
-### What it catches
+> **For Intel projects:** GCC must be installed even if the library itself is built
+> with `icpx`. ABICC only uses GCC to parse headers, not to compile the library.
 
-Everything Mode 1 catches, plus:
+### What it catches (beyond abidiff)
 
-- ✅ `noexcept` specifier removal/addition
-- ✅ `inline` → non-inline changes (ODR hazard)
-- ✅ C++ template class layout changes (from AST)
-- ✅ `explicit` constructor attribute changes
-- ✅ `[[nodiscard]]` attribute changes
-- ✅ Default argument changes
-- ✅ `const` qualifier changes on methods
-- ✅ Transitive header type changes (dependency ABI leaks)
-- ✅ Macro-expanded type changes (if header includes expand correctly)
+- ✅ Everything abidiff catches (with headers as source)
+- ✅ `noexcept` specifier changes
+- ✅ `inline` → non-inline ODR (symbol absent from v1 .so, appears in v2)
+- ✅ C++ attribute changes (`[[nodiscard]]`, `explicit`, etc.)
+- ✅ Template instantiation ABI via AST
+- ✅ Dependency ABI leaks (if transitive headers are included)
+- ✅ Works on stripped production `.so` (no `-g` needed)
 
 ### What it misses
 
-- ❌ ELF-only symbol visibility changes (without DWARF, can't distinguish hidden vs
-  default if header doesn't reflect it)
-- ❌ Complex `#ifdef` / platform-guarded type differences not covered by the
-  configured compiler flags
-- ❌ Deep template specialization edge cases without explicit instantiation hints
-- ❌ ABI differences from link-time optimization (LTO) that don't appear in headers
-- N/A for inline-only (header-only) APIs — no `.so` symbol to compare against
-
-### Limitations
-
-1. **Header completeness** — if your headers `#include` paths aren't provided via
-   `-include-path`, transitive types may not resolve.
-2. **Compiler-flag sensitivity** — `#ifdef __x86_64__` etc. may produce different
-   ASTs on different platforms. Run on the target platform.
-3. **Macro-expanded types** — `typedef HANDLE void*`-style platform macros may
-   not be fully expanded, leading to false negatives.
+- ❌ ELF-only symbol visibility changes (no symbol table analysis)
+- ❌ Anonymous struct/union not expressible in headers
+- ❌ Types resolved differently by `#ifdef`/macro guards at compile time (header AST may differ from actual compiled result)
 
 ### Usage
 
 ```bash
-# Requires abi-compliance-checker
-sudo apt-get install abi-compliance-checker
+sudo apt-get install abi-compliance-checker gcc
 
-# Create XML spec files
-cat > v1.xml << 'SPEC'
+# Create OLD.xml descriptor:
+cat > OLD.xml << EOF
 <version>1.0</version>
-<headers>
-  <directory>path/to/v1/include</directory>
-</headers>
-<libs>
-  <lib>path/to/libv1.so</lib>
-</libs>
-SPEC
+<headers>/path/to/v1/include/</headers>
+<libs>/path/to/libfoo_v1.so</libs>
+EOF
 
-cat > v2.xml << 'SPEC'
-<version>2.0</version>
-<headers>
-  <directory>path/to/v2/include</directory>
-</headers>
-<libs>
-  <lib>path/to/libv2.so</lib>
-</libs>
-SPEC
-
-abi-compliance-checker -lib MyLib -old v1.xml -new v2.xml
+# Create NEW.xml similarly, then compare:
+abi-compliance-checker -lib libfoo -old OLD.xml -new NEW.xml
 ```
 
 ---
 
-## Mode 3: ABICC Dump-Mode (with abi-dumper)
+## ABICC Usage #1 — abi-dumper / Binary Mode
+
+> This is what `abi-compliance-checker` calls **USAGE #1 (WITH ABI DUMPER)** in its docs.
 
 ### Overview
 
-**ABICC dump-mode** combines `abi-dumper` (which extracts detailed type information
-from DWARF debug sections) with `abi-compliance-checker`. This is the most accurate
-mode: DWARF is the ground truth for compiled types, capturing what macros and
-`#ifdef`s actually resolved to at compile time.
+`abi-dumper` reads DWARF debug sections directly from the `.so` binary and produces
+a `.dump` file. **No compiler is involved at any step.** ABICC then compares two dumps.
 
 ### How it works
 
 ```
-libv1.so (-g) ──► abi-dumper ──► v1.dump ──┐
-                                             ├──► abi-compliance-checker ──► report
-libv2.so (-g) ──► abi-dumper ──► v2.dump ──┘
+libv1.so (with -g) ──► abi-dumper ──► ABI-1.dump ──┐
+                                                     ├──► abi-compliance-checker ──► report
+libv2.so (with -g) ──► abi-dumper ──► ABI-2.dump ──┘
 ```
-
-`abi-dumper` serializes DWARF type trees into `.dump` files. `abi-compliance-checker`
-diffs them semantically.
 
 ### Requirements
 
 | Requirement | Mandatory? | Notes |
 |-------------|-----------|-------|
-| Two `.so` files with `-g` | ✅ yes | DWARF is the core input |
-| `abi-dumper` | ✅ yes | `sudo apt-get install abi-dumper` |
-| `abi-compliance-checker` | ✅ yes | Same as mode 2 |
-| `universal-ctags` or `exuberant-ctags` | ✅ yes | Required by abi-dumper |
-| `vtable-dumper` | ✅ yes | For C++ vtable extraction |
-| Public headers | ❌ optional | Improves output; not strictly required |
-| **GCC** | ✅ yes | **Only GCC is supported.** Intel compilers (icpx, icc) and Clang produce DWARF that abi-dumper cannot reliably parse. |
+| Two `.so` compiled with `-g -Og` | ✅ | DWARF is the input — no debug info = no dump |
+| `abi-dumper` | ✅ | `sudo apt-get install abi-dumper` |
+| `abi-compliance-checker` | ✅ | |
+| `universal-ctags` | ✅ | Required by abi-dumper |
+| `vtable-dumper` | ✅ | For C++ vtable extraction |
+| Compiler | ❌ **not needed** | abi-dumper reads binary DWARF, no compilation |
+| Headers | ❌ optional | `abi-dumper -public-headers include/` filters to public API |
 
-### What it catches
+### What it catches (beyond Usage #2)
 
-Everything Mode 2 catches, plus:
-
-- ✅ Anonymous struct/union layouts (not expressible in headers, only in DWARF)
-- ✅ Complex typedef chains resolved to actual underlying types
-- ✅ Template instantiation details from DWARF (actual offsets, not AST estimates)
+- ✅ Anonymous struct/union layouts (in DWARF but not expressible in headers)
+- ✅ Types resolved by compiler flags/macros (DWARF = actual compiled result)
+- ✅ Complex typedef chains to actual underlying types
 - ✅ Bit-field layouts at bit-level precision
-- ✅ `#pragma pack` and compiler-attribute-modified layouts
-- ✅ Types defined in `.c`/`.cpp` implementation files but leaked into ABI
-- ✅ ABI differences caused by different compiler flags (e.g., `-m32` vs `-m64`)
+- ✅ `#pragma pack` effects
+- ✅ Types from `.cpp` implementation files leaked into ABI
 
 ### What it misses
 
-- ❌ Inline-only (header-only) APIs — no DWARF for functions never compiled into `.so`
-- ❌ ELF-only symbol visibility changes (same as mode 2)
-- ❌ `noexcept` specifier (not in DWARF — same as abidiff)
-- ❌ Changes in stripped production `.so` (requires `-g`)
-
-### Why dump-mode is more accurate than headers-only
-
-Headers can contain macros, `#ifdef`s, and platform guards that make the "true"
-compiled type ambiguous. DWARF records what the compiler **actually** saw:
-
-```c
-// header says:
-typedef INTERNAL_INT_TYPE my_int;
-
-// INTERNAL_INT_TYPE might be int32_t or int64_t depending on platform
-// Headers-only mode may guess wrong; DWARF records the actual resolved type
-```
-
-Additionally, anonymous types invisible in headers appear in DWARF:
-```c
-struct Foo {
-    struct { int x; int y; };  // anonymous — no name in header
-    int z;
-};
-```
+- ❌ Inline-only (header-only) API — never compiled into `.so`, no DWARF
+- ❌ `noexcept` specifier (not stored in DWARF)
+- ❌ ELF-only symbol visibility changes
+- ❌ Requires `-g` build — not available for production stripped binaries
 
 ### Limitations
 
-> ⚠️ **Critical: GCC only.** `abi-dumper` is designed for GCC-compiled libraries.
-> Intel compilers (`icpx`, `icc`) and Clang produce DWARF variants that abi-dumper
-> cannot reliably parse. For Intel projects where the standard toolchain is `icpx`,
-> this mode is **effectively unavailable** unless a parallel GCC build is maintained.
-> This is the primary reason `abi-scanner` defaults to **Mode 1 + Mode 2** for Intel
-> product scanning.
-
-1. **Requires debug builds** — production `.so` files are usually stripped. This
-   mode is typically available only for CI artifacts, staging, or debug builds.
-2. **Large DWARF sections** — debug `.so` files can be 10–100× larger. Analysis
-   takes significantly longer.
-3. **Tool dependency chain** — `abi-dumper` + `vtable-dumper` + `ctags` must all
-   be compatible versions.
-4. **`noexcept` blind spot** — even with full DWARF, `noexcept` is not recorded.
-   Use mode 2 (headers) to cover this.
+1. **Requires debug builds** — production `.so` files are stripped. This mode
+   requires CI/staging debug builds.
+2. **No compiler required, but debug info required** — the `.so` must be compiled
+   with `-g -Og`. The compiler used (GCC, icpx, clang) does not matter for this mode —
+   abi-dumper reads DWARF directly.
 
 ### Usage
 
 ```bash
-# Install full toolchain
 sudo apt-get install abi-dumper abi-compliance-checker universal-ctags vtable-dumper
 
-# Build .so files with debug info
-g++ -shared -fPIC -g -Wl,-soname,libmylib.so.1 -o libmylib_v1.so src_v1.cpp
-g++ -shared -fPIC -g -Wl,-soname,libmylib.so.1 -o libmylib_v2.so src_v2.cpp
+# Build with debug info (any compiler: gcc, icpx, clang)
+g++ -shared -fPIC -g -Og -o libfoo_v1.so src_v1.cpp
 
-# Dump ABI from DWARF
-abi-dumper libmylib_v1.so -o v1.dump -lver 1.0
-abi-dumper libmylib_v2.so -o v2.dump -lver 2.0
-
-# Compare
-abi-compliance-checker -lib MyLib -old v1.dump -new v2.dump
+abi-dumper libfoo_v1.so -o ABI-1.dump -lver 1.0 -public-headers include/
+abi-dumper libfoo_v2.so -o ABI-2.dump -lver 2.0 -public-headers include/
+abi-compliance-checker -lib libfoo -old ABI-1.dump -new ABI-2.dump
 ```
 
 ---
 
-## Combined Pipeline: abi-scanner
+## Our Pipeline (Intel Production)
 
-`abi-scanner` runs **Mode 1 + Mode 2** by default (works for production stripped `.so`
-with headers), and upgrades to **Mode 1 + Mode 3** when debug `.so` files are available.
-
-### Combined verdict logic
+`abi-scanner` runs **abidiff+headers + ABICC Usage #2** by default:
 
 ```
-abidiff result:    PASS / WARN / FAIL
-ABICC result:      PASS / WARN / FAIL
-                         │
-                         ▼
-           if EITHER reports FAIL → combined = FAIL
-           if EITHER reports WARN → combined = WARN
-           if BOTH   report PASS  → combined = PASS
+abidiff+headers  ──────────────────────────────────────────► ELF-level report
+ABICC Usage #2 (GCC compiles headers) ────────────────────► AST-level report
+                                                              │
+                                           combined verdict ◄─┘
+                                  (worst-of: any break = breaking)
 ```
 
-**Rationale:** The tools have complementary blind spots:
+**Why not Usage #1 by default:**
+- Intel production `.so` files are stripped (no `-g`) — abi-dumper cannot read DWARF
+- Usage #2 works on production binaries and catches the C++ semantic cases (noexcept,
+  templates, ODR) that abidiff misses
+- Usage #1 is available as an optional mode when CI/staging provides debug builds
 
-| What | abidiff sees it | ABICC sees it |
-|------|:--------------:|:------------:|
-| Symbol removal | ✅ | ✅ |
-| ELF visibility change | ✅ | ❌ |
-| noexcept removal | ❌ | ✅ (headers) |
-| Inline ODR | ❌ | ✅ (headers) |
-| Type layout (stripped .so) | ❌ | ✅ (headers) |
-| Anon struct layout | ⚠️ DWARF | ⚠️ dump |
-
-Using only one tool means a real break can slip through. The combined worst-of
-verdict minimizes false negatives at the cost of some false positives (reviewed
-manually).
-
-### Pipeline configuration
-
-```yaml
-# abi-scanner config example
-pipeline:
-  modes:
-    - abidiff          # always run
-    - abicc_headers    # always run (requires headers)
-    - abicc_dump       # run only if debug_so available
-
-  verdict: worst-of    # FAIL if any mode FAILs
-
-  inputs:
-    v1_so: dist/v1/lib/libmylib.so
-    v2_so: dist/v2/lib/libmylib.so
-    v1_headers: dist/v1/include/
-    v2_headers: dist/v2/include/
-    # optional:
-    v1_debug_so: build/v1/debug/libmylib.so
-    v2_debug_so: build/v2/debug/libmylib.so
-```
+**Why two tools combined:**
+- abidiff catches ELF-only symbol changes that ABICC Usage #2 misses
+- ABICC Usage #2 catches noexcept/template/ODR that abidiff misses
+- Together they cover the full ABI contract
 
 ---
 
-## Quick Reference
+## Tool Comparison Quick Reference
 
-| Feature | abidiff | ABICC+headers | ABICC+dump |
-|---------|:-------:|:-------------:|:----------:|
-| Needs DWARF | optional | ❌ | ✅ required |
-| Needs headers | ❌ | ✅ | optional |
-| Needs `abi-dumper` | ❌ | ❌ | ✅ |
-| Works on stripped .so | ⚠️ limited | ✅ | ❌ |
-| Catches noexcept | ❌ | ✅ | ❌ |
-| Catches inline ODR | ❌ | ✅ | ❌ |
-| Catches type layout | ⚠️ DWARF | ✅ | ✅ |
-| Catches anon structs | ⚠️ DWARF | ⚠️ limited | ✅ |
-| Catches dep leak | ⚠️ DWARF | ✅ | ✅ |
-| Speed | fast | medium | slow |
-| Recommended for | baseline | production | CI/staging |
-
----
-
-*See [examples/README.md](../examples/README.md) for the full case-by-case matrix.*
+| ABI break type | abidiff+headers | ABICC Usage #2 | ABICC Usage #1 |
+|---|:---:|:---:|:---:|
+| Symbol removed | ✅ | ✅ | ✅ |
+| Symbol added | ✅ | ✅ | ✅ |
+| Param type change | ✅ | ✅ | ✅ |
+| Struct layout change | ⚠️ DWARF | ✅ | ✅ |
+| vtable change | ⚠️ DWARF | ✅ | ✅ |
+| `noexcept` removed | ❌ | ✅ | ❌ |
+| `inline` → non-inline | ❌ | ✅ | ❌ |
+| Template ABI | ⚠️ DWARF | ✅ | ✅ |
+| Dependency leak | ⚠️ DWARF | ✅ | ✅ |
+| Anonymous types | ❌ | ❌ | ✅ |
+| Macro-resolved types | ❌ | ❌ | ✅ |
+| ELF-only visibility | ✅ | ❌ | ❌ |
+| Needs compiler (GCC) | ❌ | ✅ GCC | ❌ |
+| Needs debug build | ❌ | ❌ | ✅ |
