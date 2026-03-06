@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from typing import Dict, List, Iterable, Tuple
 
@@ -11,20 +12,40 @@ CategoryStats = Dict[str, Dict[str, int]]
 CategorySymbols = Dict[str, Dict[str, List[str]]]
 
 
-def demangle_symbol(symbol: str) -> str:
-    """Demangle a C++ symbol using c++filt.
+def demangle_symbols(symbols: "list[str]") -> "dict[str, str]":
+    """Batch demangle C++ symbols using a single c++filt invocation.
 
-    Returns the original symbol if demangling fails.
+    Returns a dict mapping mangled -> demangled. Falls back to identity on error.
     """
+    if not symbols:
+        return {}
+    cppfilt = shutil.which("c++filt")
+    if not cppfilt:
+        return {s: s for s in symbols}
     try:
-        result = subprocess.run(
-            ["c++filt", symbol], capture_output=True, text=True, timeout=1, check=False
+        r = subprocess.run(
+            [cppfilt],
+            input="\n".join(symbols),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         )
-        if result.returncode == 0:
-            return result.stdout.strip()
+        if r.returncode == 0:
+            demangled = r.stdout.splitlines()
+            return dict(zip(symbols, demangled[:len(symbols)]))
     except Exception:
         pass
-    return symbol
+    return {s: s for s in symbols}
+
+
+def demangle_symbol(symbol: str) -> str:
+    """Demangle a single C++ symbol using c++filt.
+
+    Returns the original symbol if demangling fails.
+    Convenience wrapper around demangle_symbols().
+    """
+    return demangle_symbols([symbol]).get(symbol, symbol)
 
 
 class SymbolClassifier:

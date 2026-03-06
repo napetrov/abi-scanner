@@ -111,6 +111,7 @@ def has_debug_info(lib_path: Path) -> bool:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=30,
             )
             if proc.returncode == 0 and _contains_debug_sections(proc.stdout):
                 return True
@@ -125,6 +126,7 @@ def has_debug_info(lib_path: Path) -> bool:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=30,
             )
             if proc.returncode == 0 and _contains_debug_sections(proc.stdout):
                 return True

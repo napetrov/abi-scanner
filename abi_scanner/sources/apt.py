@@ -15,6 +15,46 @@ from .base import PackageSource
 from .utils import safe_extract_tar
 
 
+import os
+import time
+import hashlib as _hashlib
+
+_APT_CACHE_TTL = 3600  # 1 hour
+
+
+def _fetch_apt_index(url: str) -> str:
+    """Fetch and cache APT Packages.gz content. Cache TTL: 1 hour.
+
+    Falls back to stale cache on network error.
+    """
+    cache_dir = Path(os.environ.get(
+        "ABI_SCANNER_CACHE_DIR",
+        str(Path.home() / ".cache" / "abi_scanner" / "apt")
+    ))
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    cache_key = _hashlib.md5(url.encode()).hexdigest()[:16]
+    cache_file = cache_dir / f"{cache_key}.txt"
+
+    if cache_file.exists():
+        age = time.time() - cache_file.stat().st_mtime
+        if age < _APT_CACHE_TTL:
+            return cache_file.read_text(encoding="utf-8")
+
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
+    except Exception:
+        # On network error, try stale cache
+        if cache_file.exists():
+            return cache_file.read_text(encoding="utf-8")
+        raise
+
+    cache_file.write_text(data, encoding="utf-8")
+    return data
+
+
 def normalize_debian_version(ver: str) -> str:
     """Normalize a Debian version string to PEP 440.
 
@@ -98,8 +138,7 @@ class AptSource(PackageSource):
         base = url[:dists_idx]  # https://host/repo (e.g. .../oneapi)
 
         try:
-            with urllib.request.urlopen(url, timeout=60) as resp:
-                index_data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
+            index_data = _fetch_apt_index(url)
         except urllib.error.HTTPError as e:
             raise ValueError(f"HTTP {e.code} fetching APT index: {url}") from e
         except urllib.error.URLError as e:
@@ -114,7 +153,17 @@ class AptSource(PackageSource):
             if pm and vm and fm:
                 if pm.group(1).strip() == package_name and vm.group(1).strip() == version:
                     rel_path = fm.group(1).strip()
-                    return f"{base}/{rel_path}"
+                    # Fix 5: Validate rel_path to prevent path traversal / SSRF
+                    if not re.match(r'^[a-zA-Z0-9_./%+-]+$', rel_path) or '..' in rel_path:
+                        raise ValueError(f"Suspicious rel_path in APT index: {rel_path!r}")
+                    full_url = f"{base}/{rel_path}"
+                    # Verify resulting URL still has the same host as base
+                    if urlparse(full_url).netloc != urlparse(base).netloc:
+                        raise ValueError(f"URL host mismatch after rel_path: {full_url}")
+                    # Fix 4: Extract and store SHA256 for download verification
+                    sha256_m = re.search(r"^SHA256: (.+)$", block, re.M)
+                    self._pending_sha256 = sha256_m.group(1).strip() if sha256_m else None
+                    return full_url
 
         raise ValueError(
             f"Package {package_name}={version} not found in APT index {url}"
@@ -132,8 +181,7 @@ class AptSource(PackageSource):
         if not url.startswith("https://"):
             raise ValueError(f"Only https:// index URLs allowed, got: {url}")
         try:
-            with urllib.request.urlopen(url, timeout=60) as resp:
-                index_data = gzip.decompress(resp.read()).decode("utf-8", "ignore")
+            index_data = _fetch_apt_index(url)
         except Exception as e:
             raise RuntimeError(f"Failed to fetch APT index: {e}") from e
 
@@ -205,10 +253,22 @@ class AptSource(PackageSource):
         # Download
         print(f"Downloading {url}...", file=sys.stderr)
         try:
-            urllib.request.urlretrieve(url, output_file)
-            return output_file
+            with urllib.request.urlopen(url, timeout=120) as resp:
+                deb_bytes = resp.read()
+            output_file.write_bytes(deb_bytes)
         except (urllib.error.URLError, urllib.error.HTTPError) as e:
             raise RuntimeError(f"Failed to download {url}: {e}") from e
+        # Fix 4: Verify SHA256 if available (set by resolve_url)
+        sha256 = getattr(self, "_pending_sha256", None)
+        if sha256:
+            import hashlib
+            actual = hashlib.sha256(deb_bytes).hexdigest()
+            if actual != sha256:
+                output_file.unlink(missing_ok=True)
+                raise ValueError(
+                    f"SHA256 mismatch for {url}: expected {sha256}, got {actual}"
+                )
+        return output_file
     
     def extract(self, package_file: Path, extract_dir: Path) -> Path:
         """Extract .deb package using dpkg-deb or ar+tar.

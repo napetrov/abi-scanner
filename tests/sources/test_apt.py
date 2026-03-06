@@ -24,42 +24,50 @@ def test_apt_source_init_no_base_url():
     assert source.base_url is None
 
 
-@patch('abi_scanner.sources.apt.urllib.request.urlretrieve')
-def test_apt_source_download_construct_url(mock_retrieve, apt_source, tmp_path):
+@patch('abi_scanner.sources.apt.urllib.request.urlopen')
+def test_apt_source_download_construct_url(mock_urlopen, apt_source, tmp_path):
     """Test downloading with constructed URL from base_url."""
-    mock_retrieve.return_value = None
-    
+    mock_resp = Mock()
+    mock_resp.read.return_value = b'fake deb content'
+    mock_resp.__enter__ = Mock(return_value=mock_resp)
+    mock_resp.__exit__ = Mock(return_value=False)
+    mock_urlopen.return_value = mock_resp
+
     result = apt_source.download(
         'intel-oneapi-dal',
         '2025.9.0-957',
         tmp_path
     )
-    
+
     # Check URL construction
     expected_filename = 'intel-oneapi-dal_2025.9.0-957_amd64.deb'
     expected_url = f'https://example.com/repo/{expected_filename}'
-    
-    mock_retrieve.assert_called_once()
-    assert expected_url in str(mock_retrieve.call_args)
+
+    mock_urlopen.assert_called_once()
+    assert expected_url in str(mock_urlopen.call_args)
     assert result.name == expected_filename
 
 
-@patch('abi_scanner.sources.apt.urllib.request.urlretrieve')
-def test_apt_source_download_direct_url(mock_retrieve, apt_source, tmp_path):
+@patch('abi_scanner.sources.apt.urllib.request.urlopen')
+def test_apt_source_download_direct_url(mock_urlopen, apt_source, tmp_path):
     """Test downloading with direct URL."""
-    mock_retrieve.return_value = None
-    
+    mock_resp = Mock()
+    mock_resp.read.return_value = b'fake deb content'
+    mock_resp.__enter__ = Mock(return_value=mock_resp)
+    mock_resp.__exit__ = Mock(return_value=False)
+    mock_urlopen.return_value = mock_resp
+
     direct_url = 'https://example.com/packages/test_1.0_amd64.deb'
-    
+
     result = apt_source.download(
         direct_url,
         '1.0',  # Version ignored for direct URLs
         tmp_path
     )
-    
+
     # Should use the direct URL
-    mock_retrieve.assert_called_once()
-    assert direct_url in str(mock_retrieve.call_args)
+    mock_urlopen.assert_called_once()
+    assert direct_url in str(mock_urlopen.call_args)
     assert result.name == 'test_1.0_amd64.deb'
 
 
