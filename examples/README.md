@@ -93,8 +93,8 @@ Which tool catches which ABI break? Three modes are compared — see
 | Column | Tool | Input | Needs DWARF? | Needs headers? |
 |--------|------|-------|:------------:|:--------------:|
 | **abidiff+headers** | `abidw --headers-dir` + `abidiff` | two `.so` + include dir | optional | ✅ (required in our pipeline) |
-| **ABICC+headers** | `abi-compliance-checker` (headers-only mode) | `.so` + headers | ❌ | ✅ |
-| **ABICC+dump (GCC-only)** | `abi-compliance-checker` + `abi-dumper` | `.so -g` + headers | ✅ required | ✅ (recommended) |
+| **ABICC+headers** (= ABICC Usage #2) | `abi-compliance-checker` (headers-only mode) | `.so` + headers | ❌ | ✅ |
+| **ABICC+dump** (= ABICC Usage #1) | `abi-compliance-checker` + `abi-dumper` | `.so -g` + headers | ✅ required | ✅ (recommended) |
 
 See [`docs/tool_modes.md`](../docs/tool_modes.md) for detailed explanations,
 requirements, limitations, and the combined pipeline decision flowchart.
