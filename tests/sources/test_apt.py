@@ -192,3 +192,95 @@ def test_apt_source_find_headers(apt_source, tmp_path):
     
     assert len(headers) >= 2
     assert all(h.suffix == '.h' for h in headers)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tests added for second-pass review fixes
+# ──────────────────────────────────────────────────────────────────────────────
+
+import gzip
+import warnings as _warnings
+
+
+def _make_packages_gz(entries: list[dict]) -> bytes:
+    """Build a minimal Packages.gz with the given list of package dicts."""
+    blocks = []
+    for e in entries:
+        lines = "\n".join(f"{k}: {v}" for k, v in e.items())
+        blocks.append(lines)
+    data = "\n\n".join(blocks) + "\n\n"
+    return gzip.compress(data.encode())
+
+
+def test_resolve_url_rejects_url_encoded_traversal():
+    """Fix 1: %2e%2e in rel_path must be rejected after URL-decode."""
+    pkg_gz = _make_packages_gz([{
+        "Package": "evil",
+        "Version": "1.0",
+        "Filename": "pool/%2e%2e/evil.deb",
+        "SHA256": "abc123",
+    }])
+    source = AptSource()
+    with patch("abi_scanner.sources.apt._fetch_apt_index",
+               return_value=gzip.decompress(pkg_gz).decode()):
+        with pytest.raises(ValueError, match="Suspicious rel_path"):
+            source.resolve_url(
+                "evil", "1.0",
+                index_url="https://example.com/apt/dists/all/main/binary-amd64/Packages.gz"
+            )
+
+
+def test_resolve_url_warns_on_missing_sha256():
+    """Fix 2: missing SHA256 field must emit a UserWarning."""
+    pkg_gz = _make_packages_gz([{
+        "Package": "mypkg",
+        "Version": "2.0",
+        "Filename": "pool/main/m/mypkg/mypkg_2.0_amd64.deb",
+        # No SHA256 field
+    }])
+    source = AptSource()
+    with patch("abi_scanner.sources.apt._fetch_apt_index",
+               return_value=gzip.decompress(pkg_gz).decode()):
+        with _warnings.catch_warnings(record=True) as w:
+            _warnings.simplefilter("always")
+            url = source.resolve_url(
+                "mypkg", "2.0",
+                index_url="https://example.com/apt/dists/all/main/binary-amd64/Packages.gz"
+            )
+            assert url.endswith("mypkg_2.0_amd64.deb")
+            assert len(w) == 1
+            assert "No SHA256" in str(w[0].message)
+
+
+def test_download_sha256_mismatch_raises(tmp_path):
+    """Fix 2: SHA256 mismatch must raise ValueError and delete file."""
+    import urllib.request
+    import io
+
+    source = AptSource()
+    source._pending_sha256s["https://example.com/pkg.deb"] = "deadbeef" * 8  # 64-char wrong hash
+
+    fake_response = Mock()
+    fake_response.read.return_value = b"not-the-real-content"
+    fake_response.__enter__ = Mock(return_value=fake_response)
+    fake_response.__exit__ = Mock(return_value=False)
+
+    with patch("urllib.request.urlopen", return_value=fake_response):
+        with pytest.raises(ValueError, match="SHA256 mismatch"):
+            source.download("https://example.com/pkg.deb", "", tmp_path)
+
+
+def test_safe_extract_tar_rejects_path_traversal(tmp_path):
+    """Fix 5: path traversal in tar archive must raise RuntimeError."""
+    import tarfile, io
+    from abi_scanner.sources.utils import safe_extract_tar
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode='w:gz') as tf:
+        info = tarfile.TarInfo(name="../../evil.txt")
+        info.size = 5
+        tf.addfile(info, io.BytesIO(b"evil!"))
+    buf.seek(0)
+    with tarfile.open(fileobj=buf, mode='r:gz') as tf:
+        with pytest.raises(RuntimeError, match="Path traversal"):
+            safe_extract_tar(tf, tmp_path)

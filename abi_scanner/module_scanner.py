@@ -28,7 +28,7 @@ def demangle_symbols(symbols: "list[str]") -> "dict[str, str]":
             input="\n".join(symbols),
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,  # was 10 — MKL/TBB can have thousands of symbols
             check=False,
         )
         if r.returncode == 0:
