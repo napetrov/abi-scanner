@@ -31,11 +31,23 @@ First incompatible: 2021.15.0
 - **[QUICKSTART.md](QUICKSTART.md)** — Working examples for all commands
 - **[docs/INSTALLATION.md](docs/INSTALLATION.md)** — Installation guide
 
+## Prerequisites
+
+| Tool | Required for | Install |
+|------|-------------|---------|
+| `abigail-tools` | All modes | `sudo apt install abigail-tools` |
+| `gcc` | ABICC+headers mode | `sudo apt install gcc` |
+| `abi-compliance-checker` | ABICC modes | `sudo apt install abi-compliance-checker` |
+| `micromamba` | `intel:` and `conda-forge:` channels only | see [Installation](docs/INSTALLATION.md) |
+| `dpkg-deb` | `apt:` channel | pre-installed on Debian/Ubuntu |
+
 ## Quick Start
 
 ```bash
 # Prerequisites
 sudo apt install abigail-tools
+# micromamba is only needed for intel: and conda-forge: channels
+# For apt: and local: channels, skip micromamba
 curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
 export MAMBA_ROOT_PREFIX=$(pwd)/workspace/micromamba_root
 
@@ -109,17 +121,26 @@ abi-scanner/
 
 ## Package Spec Format
 
+All `abi-scanner` commands accept packages in `channel:package=version` format:
+
 ```
 channel:package=version
+```
 
-intel:oneccl-cpu=2021.14.0
-conda-forge:dal=2025.9.0
-apt:intel-oneapi-compiler-dpcpp-cpp-runtime-2025.0=2025.0.0-1169
-local:/path/to/libfoo.so
+**Channels:**
 
-# list/compatible: version is optional
-intel:oneccl-cpu
-apt:compiler
+| Channel | Description | Example |
+|---------|-------------|---------|
+| `apt:` | Intel oneAPI APT repository | `apt:intel-oneapi-dnnl=2025.2.0` |
+| `intel:` | Intel conda channel (requires micromamba) | `intel:oneccl-cpu=2021.14.0` |
+| `conda-forge:` | conda-forge channel (requires micromamba) | `conda-forge:dal=2025.9.0` |
+| `local:` | Local file (`.so`, `.deb`, directory) | `local:/path/to/libfoo.so` |
+| `dump:` | Pre-saved abidw XML baseline | `dump:~/.abi-snapshots/libfoo.so-2025.2.abi` |
+
+For `list` and `compatible` commands, version is optional:
+```
+abi-scanner list intel:oneccl-cpu
+abi-scanner list apt:intel-oneapi-dnnl --apt-index-url <url>
 ```
 
 ## Exit Codes

@@ -11,8 +11,8 @@ and limitations.
 | Mode | Official name | Compiler needed? | Debug info needed? | Headers needed? |
 |------|--------------|:----------------:|:------------------:|:---------------:|
 | abidiff + headers | `abidiff` (libabigail) | ❌ | optional (improves accuracy) | ✅ always |
-| ABICC Usage #2 | Original / headers mode | ✅ **GCC only** | ❌ | ✅ |
-| ABICC Usage #1 | abi-dumper / binary mode | ❌ | ✅ (`-g -Og`) | ❌ (optional) |
+| ABICC+headers (ABICC Usage #2) | Original / headers mode | ✅ **GCC only** | ❌ | ✅ |
+| ABICC+dump (ABICC Usage #1) | abi-dumper / binary mode | ❌ | ✅ (`-g -Og`) | ❌ (optional) |
 
 ---
 
@@ -29,17 +29,17 @@ and limitations.
     │
     ├─ NO (production/stripped .so)
     │
-    │   Use abidiff+headers + ABICC Usage #2 (combined verdict)
+    │   Use abidiff+headers + ABICC+headers (ABICC Usage #2) (combined verdict)
     │   Any break from either → flag as ABI-breaking
     │
     └─ YES (CI/staging debug build)
 
-        Use abidiff+headers + ABICC Usage #1 (combined verdict)
+        Use abidiff+headers + ABICC+dump (ABICC Usage #1) (combined verdict)
         Most accurate: DWARF ground truth for types
         (no compiler needed — abi-dumper reads binary directly)
 ```
 
-> **Intel production default:** Mode 1 + ABICC Usage #2.  
+> **Intel production default:** Mode 1 + ABICC+headers (ABICC Usage #2).  
 > Production `.so` files have no debug info → Usage #1 unavailable.
 
 ---
@@ -106,7 +106,7 @@ abidiff v1.xml v2.xml
 
 ---
 
-## ABICC Usage #2 — Original / Headers Mode
+## ABICC+headers (ABICC Usage #2 — Original / Headers Mode)
 
 > This is what `abi-compliance-checker` calls **USAGE #2 (ORIGINAL)** in its docs.
 
@@ -171,7 +171,7 @@ abi-compliance-checker -lib libfoo -old OLD.xml -new NEW.xml
 
 ---
 
-## ABICC Usage #1 — abi-dumper / Binary Mode
+## ABICC+dump (ABICC Usage #1 — abi-dumper / Binary Mode)
 
 > This is what `abi-compliance-checker` calls **USAGE #1 (WITH ABI DUMPER)** in its docs.
 
@@ -241,11 +241,11 @@ abi-compliance-checker -lib libfoo -old ABI-1.dump -new ABI-2.dump
 
 ## Our Pipeline (Intel Production)
 
-`abi-scanner` runs **abidiff+headers + ABICC Usage #2** by default:
+`abi-scanner` runs **abidiff+headers + ABICC+headers (ABICC Usage #2)** by default:
 
 ```
 abidiff+headers  ──────────────────────────────────────────► ELF-level report
-ABICC Usage #2 (GCC compiles headers) ────────────────────► AST-level report
+ABICC+headers (ABICC Usage #2) (GCC compiles headers) ────────────────────► AST-level report
                                                               │
                                            combined verdict ◄─┘
                                   (worst-of: any break = breaking)
@@ -258,15 +258,15 @@ ABICC Usage #2 (GCC compiles headers) ──────────────
 - Usage #1 is available as an optional mode when CI/staging provides debug builds
 
 **Why two tools combined:**
-- abidiff catches ELF-only symbol changes that ABICC Usage #2 misses
-- ABICC Usage #2 catches noexcept/template/ODR that abidiff misses
+- abidiff catches ELF-only symbol changes that ABICC+headers (ABICC Usage #2) misses
+- ABICC+headers (ABICC Usage #2) catches noexcept/template/ODR that abidiff misses
 - Together they cover the full ABI contract
 
 ---
 
 ## Tool Comparison Quick Reference
 
-| ABI break type | abidiff+headers | ABICC Usage #2 | ABICC Usage #1 |
+| ABI break type | abidiff+headers | ABICC+headers (ABICC Usage #2) | ABICC+dump (ABICC Usage #1) |
 |---|:---:|:---:|:---:|
 | Symbol removed | ✅ | ✅ | ✅ |
 | Symbol added | ✅ | ✅ | ✅ |
