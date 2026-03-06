@@ -107,6 +107,7 @@ class AptSource(PackageSource):
                      If None, package must be specified as full URL
         """
         self.base_url = base_url
+        self._pending_sha256s: dict[str, str] = {}
     
 
     # Default Intel APT index URL
@@ -160,9 +161,10 @@ class AptSource(PackageSource):
                     # Verify resulting URL still has the same host as base
                     if urlparse(full_url).netloc != urlparse(base).netloc:
                         raise ValueError(f"URL host mismatch after rel_path: {full_url}")
-                    # Fix 4: Extract and store SHA256 for download verification
+                    # Fix 4: Extract and store SHA256 for download verification (URL-bound)
                     sha256_m = re.search(r"^SHA256: (.+)$", block, re.M)
-                    self._pending_sha256 = sha256_m.group(1).strip() if sha256_m else None
+                    if sha256_m:
+                        self._pending_sha256s[full_url] = sha256_m.group(1).strip()
                     return full_url
 
         raise ValueError(
@@ -258,8 +260,8 @@ class AptSource(PackageSource):
             output_file.write_bytes(deb_bytes)
         except (urllib.error.URLError, urllib.error.HTTPError) as e:
             raise RuntimeError(f"Failed to download {url}: {e}") from e
-        # Fix 4: Verify SHA256 if available (set by resolve_url)
-        sha256 = getattr(self, "_pending_sha256", None)
+        # Fix 4: Verify SHA256 if available (set by resolve_url, keyed by URL)
+        sha256 = self._pending_sha256s.pop(url, None)
         if sha256:
             import hashlib
             actual = hashlib.sha256(deb_bytes).hexdigest()

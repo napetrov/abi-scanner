@@ -7,7 +7,10 @@ import sys
 import tempfile
 import argparse
 from pathlib import Path
+import logging
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .package_spec import PackageSpec
 from .sources import create_source
@@ -16,6 +19,26 @@ from .analyzer import ABIAnalyzer, PublicAPIFilter, ABIVerdict, ABIComparisonRes
 
 
 
+
+
+def _pick_library(libs: dict, library_name: Optional[str]) -> "Optional[tuple[str, Path]]":
+    """Pick a single library from a libs dict deterministically.
+
+    Returns (base_name, path) or None if libs is empty.
+    If library_name is specified, returns the matching entry.
+    If exactly one entry, returns it.
+    If multiple entries and no library_name, returns the one with the shortest
+    base name (most generic) after sorting — deterministic and stable.
+    """
+    if not libs:
+        return None
+    if library_name and library_name in libs:
+        return library_name, libs[library_name]
+    if len(libs) == 1:
+        return next(iter(libs.items()))
+    # Multiple libs, no specific name — pick deterministically by sorted base name
+    sorted_items = sorted(libs.items(), key=lambda kv: kv[0])
+    return sorted_items[0]
 
 
 def _find_libraries(search_dir: Path, library_name: Optional[str],
@@ -321,7 +344,11 @@ def cmd_compare(args):
                 if not old_libs:
                     print(f"Error: could not obtain library for {old_spec}", file=sys.stderr)
                     return 1
-                old_lib_path = next(iter(old_libs.values()))
+                _picked = _pick_library(old_libs, library_name)
+                if _picked is None:
+                    print("Error: no libraries found", file=sys.stderr)
+                    return 1
+                _, old_lib_path = _picked
                 old_abi = tmp / "old.abi"
                 old_headers = getattr(old_lib_path, "_headers_dir", None)
                 _ok_old, _reason_old = _generate_baseline(old_lib_path, old_abi, args.verbose,
@@ -339,7 +366,11 @@ def cmd_compare(args):
                 if not new_libs:
                     print(f"Error: could not obtain library for {new_spec}", file=sys.stderr)
                     return 1
-                new_lib_path = next(iter(new_libs.values()))
+                _picked = _pick_library(new_libs, library_name)
+                if _picked is None:
+                    print("Error: no libraries found", file=sys.stderr)
+                    return 1
+                _, new_lib_path = _picked
                 new_abi = tmp / "new.abi"
                 new_headers = getattr(new_lib_path, "_headers_dir", None)
                 _ok_new, _reason_new = _generate_baseline(new_lib_path, new_abi, args.verbose,
@@ -563,7 +594,11 @@ def cmd_compatible(args):
         if not base_libs:
             print(f"Error: could not obtain library for {base_spec}", file=sys.stderr)
             return 1
-        base_lib_path = next(iter(base_libs.values()))
+        _picked = _pick_library(base_libs, library_name)
+        if _picked is None:
+            print("Error: no libraries found", file=sys.stderr)
+            return 1
+        _, base_lib_path = _picked
         base_abi = tmp / "base.abi"
         _ok, _reason = _generate_baseline(base_lib_path, base_abi, args.verbose)
         if not _ok:
@@ -591,7 +626,13 @@ def cmd_compatible(args):
                 results.append((ver, None))
                 continue
 
-            new_lib_path = next(iter(new_libs.values()))
+            _picked = _pick_library(new_libs, library_name)
+            if _picked is None:
+                if args.verbose:
+                    print(f"  Skipping {ver}: no library found", file=sys.stderr)
+                results.append((ver, None))
+                continue
+            _, new_lib_path = _picked
             new_abi = tmp / f"v{idx}.abi"
             _ok, _reason = _generate_baseline(new_lib_path, new_abi, args.verbose)
             if not _ok:
@@ -1052,8 +1093,21 @@ def cmd_validate(args):
                 else:
                     r = _symbols_only_compare(old_entry["so"], new_entry["so"])
                     if r is None:
-                        continue
-                    if args.verbose:
+                        logger.warning(
+                            "nm-D fallback failed for library %s (%s → %s); "
+                            "treating as comparison failure",
+                            base,
+                            old_entry["so"].name,
+                            new_entry["so"].name,
+                        )
+                        r = ABIComparisonResult(
+                            verdict=ABIVerdict.BREAKING,
+                            exit_code=12,
+                            baseline_old=str(old_entry["so"]),
+                            baseline_new=str(new_entry["so"]),
+                            stdout="[nm-D fallback failed: cannot compare]",
+                        )
+                    elif args.verbose:
                         print(f"  ⚠ nm-D fallback for {base}: {old_v}→{new_v}", file=sys.stderr)
 
                 if base in old_abi and base in new_abi and old_entry and new_entry:
