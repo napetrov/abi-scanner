@@ -8,29 +8,25 @@ This document explains the three complementary modes used for ABI analysis in
 ## Decision Flowchart
 
 ```
-Do you have the library's PUBLIC HEADERS?
+[Project policy] PUBLIC HEADERS are mandatory for analysis
 │
-├─ NO ──────────────────────────────────────────────────────────┐
-│                                                               │
-│   Use MODE 1: abidiff only                                    │
-│   (ELF symbol table + DWARF if available)                     │
-│                                                               │
-└─ YES                                                          │
-    │                                                           │
-    Was the .so compiled with -g (debug symbols)?              │
-    │                                                           │
-    ├─ NO (production/stripped .so) ────────────────────────┐  │
-    │                                                        │  │
-    │   Use MODE 1 + MODE 2 (combined verdict)               │  │
-    │   abidiff for ELF-level + ABICC+headers for AST-level  │  │
-    │   If either reports a break → treat as breaking        │  │
-    │                                                        │  │
-    └─ YES (CI/staging .so with debug info) ─────────────┐  │  │
-                                                         │  │  │
-        Use MODE 1 + MODE 3 (combined verdict)           │  │  │
-        abidiff for ELF + ABICC+dump for deep type info  │  │  │
-        Most accurate analysis available                 │  │  │
-                                                         ▼  ▼  ▼
+├─ headers missing  → fail fast / fetch devel/include package first
+│
+└─ headers available
+    │
+    Was the .so compiled with -g (debug symbols) AND built with GCC?
+    │
+    ├─ NO (production/stripped .so, or icpx/clang build)
+    │
+    │   Use MODE 1 + MODE 2 (combined verdict)
+    │   abidiff+headers for ELF-level + ABICC+headers for AST-level
+    │   If either reports a break → treat as breaking
+    │
+    └─ YES (CI/staging GCC debug build)
+
+        Use MODE 1 + MODE 3 (combined verdict)
+        abidiff+headers + ABICC+dump for deepest type precision
+
                                               Review combined verdict
                                               Any break from any mode
                                               → flag release as ABI-breaking
@@ -49,20 +45,21 @@ DWARF debug sections for type layout information.
 ### How it works
 
 ```
-libv1.so ──► abidw ──► v1.xml ──┐
-                                 ├──► abidiff ──► ABI report
-libv2.so ──► abidw ──► v2.xml ──┘
+libv1.so ──► abidw --headers-dir include/ ──► v1.xml ──┐
+                                                         ├──► abidiff ──► ABI report
+libv2.so ──► abidw --headers-dir include/ ──► v2.xml ──┘
 ```
 
-`abidw` serializes the ABI into an XML representation; `abidiff` compares two XMLs.
+`abidw` serializes the ABI into XML; `--headers-dir` adds header context so abidiff
+can resolve type names and catch layout changes even without full DWARF.
 
 ### Requirements
 
 | Requirement | Mandatory? | Notes |
 |-------------|-----------|-------|
-| Two `.so` files | ✅ yes | The only hard requirement |
-| DWARF debug info (`-g`) | ❌ optional | Without it, type layout changes are invisible |
-| Headers | ❌ no | Not used by abidiff |
+| Two `.so` files | ✅ yes | Core input |
+| Public headers (`--headers-dir`) | ✅ yes (our pipeline) | Greatly improves type resolution; we **always** pass headers |
+| DWARF debug info (`-g`) | ❌ optional | Without it, type layout changes rely on headers alone |
 | Compiler | ❌ no | Not needed |
 
 ### What it catches
@@ -111,8 +108,9 @@ libv2.so ──► abidw ──► v2.xml ──┘
 # Requires libabigail-tools
 sudo apt-get install abigail-tools
 
-abidw --out-file v1.xml libv1.so
-abidw --out-file v2.xml libv2.so
+# Always pass headers — improves type resolution significantly
+abidw --headers-dir include/ --out-file v1.xml libv1.so
+abidw --headers-dir include/ --out-file v2.xml libv2.so
 abidiff v1.xml v2.xml
 echo "Exit code: $?"
 ```
@@ -245,7 +243,7 @@ diffs them semantically.
 | `universal-ctags` or `exuberant-ctags` | ✅ yes | Required by abi-dumper |
 | `vtable-dumper` | ✅ yes | For C++ vtable extraction |
 | Public headers | ❌ optional | Improves output; not strictly required |
-| GCC | ✅ yes | Used by abi-dumper's ctags pipeline |
+| **GCC** | ✅ yes | **Only GCC is supported.** Intel compilers (icpx, icc) and Clang produce DWARF that abi-dumper cannot reliably parse. |
 
 ### What it catches
 
@@ -288,6 +286,13 @@ struct Foo {
 ```
 
 ### Limitations
+
+> ⚠️ **Critical: GCC only.** `abi-dumper` is designed for GCC-compiled libraries.
+> Intel compilers (`icpx`, `icc`) and Clang produce DWARF variants that abi-dumper
+> cannot reliably parse. For Intel projects where the standard toolchain is `icpx`,
+> this mode is **effectively unavailable** unless a parallel GCC build is maintained.
+> This is the primary reason `abi-scanner` defaults to **Mode 1 + Mode 2** for Intel
+> product scanning.
 
 1. **Requires debug builds** — production `.so` files are usually stripped. This
    mode is typically available only for CI artifacts, staging, or debug builds.

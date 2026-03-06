@@ -58,8 +58,8 @@ embedded firmware all depend on ABI stability for safe rolling upgrades.
 Which tool catches which ABI break? Three modes are compared — see
 [`docs/tool_modes.md`](../docs/tool_modes.md) for a full explanation of each mode.
 
-| Case | Description | abidiff | ABICC+headers | ABICC+dump |
-|------|-------------|:-------:|:-------------:|:----------:|
+| Case | Description | abidiff+headers | ABICC+headers | ABICC+dump (GCC-only) |
+|------|-------------|:---------------:|:-------------:|:----------------------:|
 | 01 | Symbol removal | ✅ | ✅ | ✅ |
 | 02 | Param type change | ✅ | ✅ | ✅ |
 | 03 | Compatible addition | ✅ | ✅ | ✅ |
@@ -92,9 +92,9 @@ Which tool catches which ABI break? Three modes are compared — see
 
 | Column | Tool | Input | Needs DWARF? | Needs headers? |
 |--------|------|-------|:------------:|:--------------:|
-| **abidiff** | `abidiff` (libabigail) | two `.so` files | optional | ❌ |
+| **abidiff+headers** | `abidw --headers-dir` + `abidiff` | two `.so` + include dir | optional | ✅ (required in our pipeline) |
 | **ABICC+headers** | `abi-compliance-checker` (headers-only mode) | `.so` + headers | ❌ | ✅ |
-| **ABICC+dump** | `abi-compliance-checker` + `abi-dumper` | `.so -g` + headers | ✅ required | optional |
+| **ABICC+dump (GCC-only)** | `abi-compliance-checker` + `abi-dumper` | `.so -g` + headers | ✅ required | ✅ (recommended) |
 
 See [`docs/tool_modes.md`](../docs/tool_modes.md) for detailed explanations,
 requirements, limitations, and the combined pipeline decision flowchart.
@@ -127,8 +127,8 @@ pytest tests/test_abi_scenarios.py -v
 cd examples/case01_symbol_removal
 gcc -shared -fPIC -g v1.c -o libv1.so
 gcc -shared -fPIC -g v2.c -o libv2.so
-abidw --out-file v1.xml libv1.so
-abidw --out-file v2.xml libv2.so
+abidw --headers-dir . --out-file v1.xml libv1.so
+abidw --headers-dir . --out-file v2.xml libv2.so
 abidiff v1.xml v2.xml
 ```
 
