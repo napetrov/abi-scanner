@@ -8,11 +8,15 @@ import zipfile
 
 def safe_extract_tar(tar: tarfile.TarFile, extract_dir: Path):
     """Safely extract tar archive preventing path traversal (CVE-2007-4559).
-    
+
+    Security: Every member path is resolved against extract_dir using commonpath
+    (more robust than startswith on case-insensitive / symlink-heavy filesystems).
+    Symlinks, hard links, and device files are rejected to prevent exploitation.
+
     Args:
         tar: tarfile.TarFile object
         extract_dir: Destination directory
-        
+
     Raises:
         RuntimeError: If any member attempts path traversal or is unsafe
     """

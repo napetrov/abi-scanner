@@ -7,7 +7,10 @@ import sys
 import tempfile
 import argparse
 from pathlib import Path
+import logging
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .package_spec import PackageSpec
 from .sources import create_source
@@ -16,6 +19,26 @@ from .analyzer import ABIAnalyzer, PublicAPIFilter, ABIVerdict, ABIComparisonRes
 
 
 
+
+
+def _pick_library(libs: dict, library_name: Optional[str]) -> "Optional[tuple[str, Path]]":
+    """Pick a single library from a libs dict deterministically.
+
+    Returns (base_name, path) or None if libs is empty.
+    If library_name is specified, returns the matching entry.
+    If exactly one entry, returns it.
+    If multiple entries and no library_name, returns the one with the shortest
+    base name (most generic) after sorting — deterministic and stable.
+    """
+    if not libs:
+        return None
+    if library_name and library_name in libs:
+        return library_name, libs[library_name]
+    if len(libs) == 1:
+        return next(iter(libs.items()))
+    # Multiple libs, no specific name — pick deterministically by sorted base name
+    sorted_items = sorted(libs.items(), key=lambda kv: kv[0])
+    return sorted_items[0]
 
 
 def _find_libraries(search_dir: Path, library_name: Optional[str],
@@ -63,8 +86,16 @@ def _find_libraries(search_dir: Path, library_name: Optional[str],
         
     result = {}
     for base_name, paths in found_libs.items():
-        # prefer most-versioned name (longest) or longest path if tied
-        chosen = sorted(paths, key=lambda p: (len(p.name), len(str(p))))[-1]
+        def _version_key(p):
+            """Extract numeric version components from .so path for correct sorting."""
+            name = p.name
+            # e.g. libfoo.so.2.10.1 -> (2, 10, 1)
+            so_idx = name.find('.so')
+            ver_part = name[so_idx + 3:].lstrip('.') if so_idx != -1 else ''
+            parts = [x for x in ver_part.split('.') if x.isdigit()]
+            return tuple(int(x) for x in parts) if parts else (0,)
+
+        chosen = sorted(paths, key=_version_key)[-1]
         result[base_name] = chosen
         if verbose:
             print(f"  Found {base_name}: {chosen}", file=sys.stderr)
@@ -96,7 +127,10 @@ def _generate_baseline(lib_path: Path, output_path: Path,
         print(f"  abidw: {lib_path.name}" + (f" (headers: {headers_dir})" if headers_dir else ""),
               file=sys.stderr)
 
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return False, f"abidw timed out after 300s for {lib_path.name}"
     # abidw may exit 0 but crash via assertion (libabigail DWARF bug) — check output file too
     if r.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
         stderr_tail = r.stderr.strip()[-300:] if r.stderr.strip() else "(no output)"
@@ -230,8 +264,11 @@ def _symbols_only_compare(old_lib: Path, new_lib: Path) -> "Optional[ABIComparis
     Result includes a note in stdout indicating this is a fallback comparison.
     """
     def _get_syms(lib: Path) -> "Optional[dict]":
-        r = subprocess.run(["nm", "-D", "--defined-only", str(lib)],
-                           capture_output=True, text=True)
+        try:
+            r = subprocess.run(["nm", "-D", "--defined-only", str(lib)],
+                               capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return None
         if r.returncode != 0:
             return None
         syms: dict = {}
@@ -301,34 +338,44 @@ def cmd_compare(args):
                 _ok_old, _reason_old = True, ""
             else:
                 old_spec = PackageSpec.parse(args.old)
-                old_lib = _download_and_prepare(old_spec, tmp / "old", library_name,
+                old_libs = _download_and_prepare(old_spec, tmp / "old", library_name,
                                                 args.verbose, apt_index_url=_apt_index_url,
                                                 with_dev_package=_with_dev)
-                if not old_lib:
+                if not old_libs:
                     print(f"Error: could not obtain library for {old_spec}", file=sys.stderr)
                     return 1
+                _picked = _pick_library(old_libs, library_name)
+                if _picked is None:
+                    print("Error: no libraries found", file=sys.stderr)
+                    return 1
+                _, old_lib_path = _picked
                 old_abi = tmp / "old.abi"
-                old_headers = getattr(old_lib, "_headers_dir", None)
-                _ok_old, _reason_old = _generate_baseline(old_lib, old_abi, args.verbose,
+                old_headers = getattr(old_lib_path, "_headers_dir", None)
+                _ok_old, _reason_old = _generate_baseline(old_lib_path, old_abi, args.verbose,
                                                            headers_dir=old_headers)
-                old_baseline = old_abi if _ok_old else old_lib
+                old_baseline = old_abi if _ok_old else old_lib_path
 
             if _new_is_dump:
                 new_baseline = _new_dump_path
                 _ok_new, _reason_new = True, ""
             else:
                 new_spec = PackageSpec.parse(args.new)
-                new_lib = _download_and_prepare(new_spec, tmp / "new", library_name,
+                new_libs = _download_and_prepare(new_spec, tmp / "new", library_name,
                                                 args.verbose, apt_index_url=_apt_index_url,
                                                 with_dev_package=_with_dev)
-                if not new_lib:
+                if not new_libs:
                     print(f"Error: could not obtain library for {new_spec}", file=sys.stderr)
                     return 1
+                _picked = _pick_library(new_libs, library_name)
+                if _picked is None:
+                    print("Error: no libraries found", file=sys.stderr)
+                    return 1
+                _, new_lib_path = _picked
                 new_abi = tmp / "new.abi"
-                new_headers = getattr(new_lib, "_headers_dir", None)
-                _ok_new, _reason_new = _generate_baseline(new_lib, new_abi, args.verbose,
+                new_headers = getattr(new_lib_path, "_headers_dir", None)
+                _ok_new, _reason_new = _generate_baseline(new_lib_path, new_abi, args.verbose,
                                                            headers_dir=new_headers)
-                new_baseline = new_abi if _ok_new else new_lib
+                new_baseline = new_abi if _ok_new else new_lib_path
 
             # Compare (nm-D fallback when abidw fails for either side)
             analyzer = ABIAnalyzer(suppressions=suppressions,
@@ -542,13 +589,18 @@ def cmd_compatible(args):
         tmp = Path(tmpdir)
 
         # Prepare base version once
-        base_lib = _download_and_prepare(base_spec, tmp / "base", library_name,
+        base_libs = _download_and_prepare(base_spec, tmp / "base", library_name,
                                          args.verbose, apt_index_url=_apt_index_url)
-        if not base_lib:
+        if not base_libs:
             print(f"Error: could not obtain library for {base_spec}", file=sys.stderr)
             return 1
+        _picked = _pick_library(base_libs, library_name)
+        if _picked is None:
+            print("Error: no libraries found", file=sys.stderr)
+            return 1
+        _, base_lib_path = _picked
         base_abi = tmp / "base.abi"
-        _ok, _reason = _generate_baseline(base_lib, base_abi, args.verbose)
+        _ok, _reason = _generate_baseline(base_lib_path, base_abi, args.verbose)
         if not _ok:
             print(f"Error: {_reason}", file=sys.stderr)
             return 1
@@ -564,18 +616,25 @@ def cmd_compatible(args):
                 package=base_spec.package,
                 version=ver,
             )
-            new_lib = _download_and_prepare(
+            new_libs = _download_and_prepare(
                 new_spec, tmp / f"v{idx}", library_name, args.verbose,
                 apt_index_url=_apt_index_url
             )
-            if not new_lib:
+            if not new_libs:
                 if args.verbose:
                     print(f"  Skipping {ver}: library not found", file=sys.stderr)
                 results.append((ver, None))
                 continue
 
+            _picked = _pick_library(new_libs, library_name)
+            if _picked is None:
+                if args.verbose:
+                    print(f"  Skipping {ver}: no library found", file=sys.stderr)
+                results.append((ver, None))
+                continue
+            _, new_lib_path = _picked
             new_abi = tmp / f"v{idx}.abi"
-            _ok, _reason = _generate_baseline(new_lib, new_abi, args.verbose)
+            _ok, _reason = _generate_baseline(new_lib_path, new_abi, args.verbose)
             if not _ok:
                 if args.verbose:
                     print(f"  abidw failed for {ver}: {_reason}", file=sys.stderr)
@@ -859,6 +918,8 @@ def cmd_validate(args):
     library_name: Optional[str] = getattr(args, "library_name", None)
     suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
     _apt_index_url: Optional[str] = getattr(args, "apt_index_url", None)
+    # Initialize early to avoid locals().get() anti-pattern (Fix 3)
+    _apt_version_to_pkg: dict = {}
 
     # ── Gather versions ───────────────────────────────────────────────────────
     try:
@@ -951,7 +1012,6 @@ def cmd_validate(args):
         abi_cache: dict[tuple, Optional[Path]] = {}
         abi_reason_cache: dict[tuple, str] = {}
 
-        _apt_version_to_pkg = locals().get("_apt_version_to_pkg", {})
         _with_dev = getattr(args, "with_dev_package", True)
 
         def get_abi(ver_str: str, idx: int) -> "Optional[dict[str, dict]]":
@@ -1009,7 +1069,10 @@ def cmd_validate(args):
             worst_result = None
 
             for base in sorted(all_bases):
-                if base not in new_abi:
+                # Guard against None entries (defensive; get_abi always returns dicts)
+                old_entry = old_abi.get(base) if old_abi else None
+                new_entry = new_abi.get(base) if new_abi else None
+                if base not in new_abi or new_entry is None:
                     r = ABIComparisonResult(
                         verdict=ABIVerdict.BREAKING,
                         exit_code=12,
@@ -1017,7 +1080,7 @@ def cmd_validate(args):
                         baseline_new="",
                         functions_removed=1
                     )
-                elif base not in old_abi:
+                elif base not in old_abi or old_entry is None:
                     r = ABIComparisonResult(
                         verdict=ABIVerdict.COMPATIBLE,
                         exit_code=4,
@@ -1025,18 +1088,31 @@ def cmd_validate(args):
                         baseline_new=str(new_abi[base]["so"]),
                         functions_added=1
                     )
-                elif old_abi[base]["abi"] and new_abi[base]["abi"]:
-                    r = analyzer.compare(old_abi[base]["abi"], new_abi[base]["abi"], api_filter, api_filter)
+                elif old_entry["abi"] and new_entry["abi"]:
+                    r = analyzer.compare(old_entry["abi"], new_entry["abi"], api_filter, api_filter)
                 else:
-                    r = _symbols_only_compare(old_abi[base]["so"], new_abi[base]["so"])
+                    r = _symbols_only_compare(old_entry["so"], new_entry["so"])
                     if r is None:
-                        continue
-                    if args.verbose:
+                        logger.warning(
+                            "nm-D fallback failed for library %s (%s → %s); "
+                            "treating as comparison failure",
+                            base,
+                            old_entry["so"].name,
+                            new_entry["so"].name,
+                        )
+                        r = ABIComparisonResult(
+                            verdict=ABIVerdict.BREAKING,
+                            exit_code=12,
+                            baseline_old=str(old_entry["so"]),
+                            baseline_new=str(new_entry["so"]),
+                            stdout="[nm-D fallback failed: cannot compare]",
+                        )
+                    elif args.verbose:
                         print(f"  ⚠ nm-D fallback for {base}: {old_v}→{new_v}", file=sys.stderr)
 
-                if base in old_abi and base in new_abi:
-                    r.binary_name_old = old_abi[base]["so"].name
-                    r.binary_name_new = new_abi[base]["so"].name
+                if base in old_abi and base in new_abi and old_entry and new_entry:
+                    r.binary_name_old = old_entry["so"].name
+                    r.binary_name_new = new_entry["so"].name
                     
                     # SO-Name bump check
                     if r.binary_name_old != r.binary_name_new:
