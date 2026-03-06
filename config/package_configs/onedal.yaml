@@ -48,7 +48,9 @@ private_patterns:
 abicc:
   enabled: true
   timeout_sec: 300
-  devel_pkg_pattern: '^intel-oneapi-dal-devel-2025\.\d+$'
+  # Headers present in devel pkg only from 2025.9+; 2025.0-2025.8 had them in
+  # intel-oneapi-dal-common-devel-2025.X which is NOT published in APT index.
+  devel_pkg_pattern: '^intel-oneapi-dal-devel-2025\.(\d{2,}|[9])$'
   headers_subpath: 'opt/intel/oneapi/dal/{version}/include'
   skip_headers:
     - sycl.hpp
