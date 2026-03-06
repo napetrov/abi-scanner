@@ -16,6 +16,7 @@ from .utils import safe_extract_tar
 
 
 import os
+import tempfile
 import time
 import hashlib as _hashlib
 
@@ -325,7 +326,6 @@ class AptSource(PackageSource):
         # .deb structure: ar archive with debian-binary, control.tar.*, data.tar.*
         # We only need data.tar.* (contains actual files)
         
-        import tempfile
         import tarfile
         
         with tempfile.TemporaryDirectory() as tmpdir:
