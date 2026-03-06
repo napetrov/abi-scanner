@@ -55,9 +55,11 @@ def _fetch_apt_index(url: str) -> str:
     tmp_fd, tmp_str = tempfile.mkstemp(dir=cache_file.parent, suffix='.tmp')
     tmp_path = Path(tmp_str)
     try:
-        os.write(tmp_fd, data.encode('utf-8'))
-        os.close(tmp_fd)
-        tmp_fd = None
+        with os.fdopen(tmp_fd, 'w', encoding='utf-8') as tmp_file:
+            tmp_fd = None  # fdopen takes ownership
+            tmp_file.write(data)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
         tmp_path.replace(cache_file)  # atomic on POSIX
         tmp_path = None
     except Exception:
@@ -275,8 +277,21 @@ class AptSource(PackageSource):
         
         # Check if already downloaded
         if output_file.exists():
-            print(f"✓ {filename} already downloaded", file=sys.stderr)
-            return output_file
+            # If we have a pending SHA256 for this URL, verify before trusting cache
+            pending = self._pending_sha256s.get(url)
+            if pending:
+                import hashlib as _hl
+                actual = _hl.sha256(output_file.read_bytes()).hexdigest()
+                if actual != pending:
+                    output_file.unlink(missing_ok=True)
+                    # Fall through to re-download
+                else:
+                    self._pending_sha256s.pop(url, None)
+                    print(f"✓ {filename} already downloaded (SHA256 verified)", file=sys.stderr)
+                    return output_file
+            else:
+                print(f"✓ {filename} already downloaded", file=sys.stderr)
+                return output_file
         
         # Download
         print(f"Downloading {url}...", file=sys.stderr)
