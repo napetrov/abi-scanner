@@ -51,12 +51,22 @@ def _fetch_apt_index(url: str) -> str:
             return cache_file.read_text(encoding="utf-8")
         raise
 
-    tmp_path = cache_file.with_suffix('.tmp')
+    tmp_fd, tmp_str = tempfile.mkstemp(dir=cache_file.parent, suffix='.tmp')
+    tmp_path = Path(tmp_str)
     try:
-        tmp_path.write_text(data, encoding="utf-8")
+        os.write(tmp_fd, data.encode('utf-8'))
+        os.close(tmp_fd)
+        tmp_fd = None
         tmp_path.replace(cache_file)  # atomic on POSIX
+        tmp_path = None
     except Exception:
-        tmp_path.unlink(missing_ok=True)
+        if tmp_fd is not None:
+            try:
+                os.close(tmp_fd)
+            except OSError:
+                pass
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
         raise
     return data
 

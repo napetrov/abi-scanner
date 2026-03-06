@@ -17,7 +17,7 @@ def test_pick_library_single():
 
 def test_pick_library_by_name():
     libs = {"libfoo.so": Path("/lib/libfoo.so"), "libbar.so": Path("/lib/libbar.so")}
-    name, path = _pick_library(libs, "libbar.so")
+    name, _ = _pick_library(libs, "libbar.so")
     assert name == "libbar.so"
 
 
