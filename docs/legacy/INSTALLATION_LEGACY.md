@@ -210,13 +210,13 @@ jobs:
       - name: Generate baseline
         run: |
           export MAMBA_ROOT_PREFIX=$PWD/mamba_root
-          bash scripts/process_single_version.sh dal ${{ github.head_ref }}
+          bash scripts/process_single_version.sh dal 2025.10.0  # replace with your target version
       
       - name: Compare with main
         run: |
           abidiff --suppressions config/suppressions/onedal.txt \
             workspace/baselines/dal/dal_main.abi \
-            workspace/baselines/dal/dal_${{ github.head_ref }}.abi
+            workspace/baselines/dal/dal_2025.10.0.abi
           EXIT=$?
           if [ $EXIT -gt 4 ]; then
             echo "ERROR: Breaking ABI changes detected!"
