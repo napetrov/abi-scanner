@@ -164,3 +164,35 @@ MIT License — see LICENSE file.
 
 ---
 **Status:** Active Development | v0.2.0-dev
+
+## Local Build Comparison & CI Integration
+
+Compare your local builds against published releases, or use pre-saved ABI snapshots
+for fast offline CI — no re-downloading on every PR.
+
+
+```bash
+# One-off: compare local .deb vs published release
+abi-scanner compare \
+  apt:intel-oneapi-dnnl=2025.2.0 \
+  local:/path/to/my-build.deb \
+  --library-name libdnnl.so \
+  --apt-index-url https://apt.repos.intel.com/oneapi/dists/all/main/binary-amd64/Packages.gz \
+  --fail-on breaking
+
+# Snapshot a baseline for offline use
+abi-scanner snapshot apt:intel-oneapi-dnnl=2025.2.0 \
+  --output-dir ~/.abi-snapshots/dnnl
+
+# Compare against snapshot (no download, no network)
+abi-scanner compare \
+  dump:~/.abi-snapshots/dnnl/libdnnl.so-2025.2.0.abi \
+  local:/path/to/my-build/libdnnl.so \
+  --fail-on breaking
+```
+
+**→ See [docs/local_compare.md](docs/local_compare.md) for the full guide**, including:
+- CI integration patterns (nightly snapshot + PR compare)
+- Multi-library snapshots
+- Manifest format
+- Air-gapped / artifact registry workflows

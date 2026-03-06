@@ -209,6 +209,20 @@ def _is_so_file(p: Path) -> bool:
     return '.so' in p.name and not p.name.endswith('.abi')
 
 
+
+
+def _resolve_dump_spec(spec_str: str, work_dir: Path) -> "tuple[bool, Optional[Path]]":
+    """Check if spec_str is a dump: reference to a pre-saved .abi file.
+
+    Returns (is_dump, Path). Raises ValueError if dump: prefix used but path invalid.
+    """
+    if spec_str.startswith("dump:"):
+        p = Path(spec_str[5:]).expanduser().resolve()
+        if p.exists() and p.suffix == ".abi":
+            return True, p
+        raise ValueError(f"dump: spec path not found or not .abi: {p}")
+    return False, None
+
 def _symbols_only_compare(old_lib: Path, new_lib: Path) -> "Optional[ABIComparisonResult]":
     """Symbol-table diff via nm -D — fallback when abidw crashes (e.g. libabigail DWARF bug).
 
@@ -261,12 +275,6 @@ def _symbols_only_compare(old_lib: Path, new_lib: Path) -> "Optional[ABIComparis
 def cmd_compare(args):
     """Execute compare command."""
     try:
-        old_spec = PackageSpec.parse(args.old)
-        new_spec = PackageSpec.parse(args.new)
-
-        if args.verbose:
-            print(f"Comparing {old_spec} → {new_spec}", file=sys.stderr)
-
         library_name: Optional[str] = getattr(args, "library_name", None)
         suppressions: Optional[Path] = Path(args.suppressions) if args.suppressions else None
         _apt_index_url: Optional[str] = getattr(args, "apt_index_url", None)
@@ -277,34 +285,50 @@ def cmd_compare(args):
         with tempfile.TemporaryDirectory(prefix="abi_scanner_") as tmpdir:
             tmp = Path(tmpdir)
 
-            # Prepare old version
-            old_lib = _download_and_prepare(old_spec, tmp / "old", library_name,
-                                            args.verbose, apt_index_url=_apt_index_url,
-                                            with_dev_package=_with_dev)
-            if not old_lib:
-                print(f"Error: could not obtain library for {old_spec}", file=sys.stderr)
-                return 1
+            # Check for dump: specs (pre-saved .abi files — skip download+abidw)
+            _old_is_dump, _old_dump_path = _resolve_dump_spec(args.old, tmp)
+            _new_is_dump, _new_dump_path = _resolve_dump_spec(args.new, tmp)
 
-            # Prepare new version
-            new_lib = _download_and_prepare(new_spec, tmp / "new", library_name,
-                                            args.verbose, apt_index_url=_apt_index_url,
-                                            with_dev_package=_with_dev)
-            if not new_lib:
-                print(f"Error: could not obtain library for {new_spec}", file=sys.stderr)
-                return 1
+            # Display names for output
+            _old_display = args.old if _old_is_dump else str(PackageSpec.parse(args.old))
+            _new_display = args.new if _new_is_dump else str(PackageSpec.parse(args.new))
 
-            # Generate ABI baselines
-            old_abi = tmp / "old.abi"
-            new_abi = tmp / "new.abi"
+            if args.verbose:
+                print(f"Comparing {_old_display} → {_new_display}", file=sys.stderr)
 
-            old_headers = getattr(old_lib, "_headers_dir", None)
-            new_headers = getattr(new_lib, "_headers_dir", None)
-            _ok_old, _reason_old = _generate_baseline(old_lib, old_abi, args.verbose,
-                                                       headers_dir=old_headers)
-            old_baseline = old_abi if _ok_old else old_lib
-            _ok_new, _reason_new = _generate_baseline(new_lib, new_abi, args.verbose,
-                                                       headers_dir=new_headers)
-            new_baseline = new_abi if _ok_new else new_lib
+            if _old_is_dump:
+                old_baseline = _old_dump_path
+                _ok_old, _reason_old = True, ""
+            else:
+                old_spec = PackageSpec.parse(args.old)
+                old_lib = _download_and_prepare(old_spec, tmp / "old", library_name,
+                                                args.verbose, apt_index_url=_apt_index_url,
+                                                with_dev_package=_with_dev)
+                if not old_lib:
+                    print(f"Error: could not obtain library for {old_spec}", file=sys.stderr)
+                    return 1
+                old_abi = tmp / "old.abi"
+                old_headers = getattr(old_lib, "_headers_dir", None)
+                _ok_old, _reason_old = _generate_baseline(old_lib, old_abi, args.verbose,
+                                                           headers_dir=old_headers)
+                old_baseline = old_abi if _ok_old else old_lib
+
+            if _new_is_dump:
+                new_baseline = _new_dump_path
+                _ok_new, _reason_new = True, ""
+            else:
+                new_spec = PackageSpec.parse(args.new)
+                new_lib = _download_and_prepare(new_spec, tmp / "new", library_name,
+                                                args.verbose, apt_index_url=_apt_index_url,
+                                                with_dev_package=_with_dev)
+                if not new_lib:
+                    print(f"Error: could not obtain library for {new_spec}", file=sys.stderr)
+                    return 1
+                new_abi = tmp / "new.abi"
+                new_headers = getattr(new_lib, "_headers_dir", None)
+                _ok_new, _reason_new = _generate_baseline(new_lib, new_abi, args.verbose,
+                                                           headers_dir=new_headers)
+                new_baseline = new_abi if _ok_new else new_lib
 
             # Compare (nm-D fallback when abidw fails for either side)
             analyzer = ABIAnalyzer(suppressions=suppressions,
@@ -334,7 +358,7 @@ def cmd_compare(args):
             }
             verdict = verdict_map.get(result.verdict.value, f"rc={result.exit_code}")
             lines = [
-                f"Comparing {old_spec} → {new_spec}",
+                f"Comparing {_old_display} → {_new_display}",
                 f"Status: {verdict}",
             ]
             if result.functions_removed or result.functions_added or result.functions_changed:
@@ -376,6 +400,70 @@ def cmd_compare(args):
         print(f"Unexpected error: {e}", file=sys.stderr)
         return 1
 
+
+
+
+def cmd_snapshot(args):
+    """Download a package and save .abi XML dump(s) to disk for later offline comparison."""
+    import datetime as _dt
+
+    try:
+        spec = PackageSpec.parse(args.spec)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    library_name: Optional[str] = getattr(args, "library_name", None)
+    _apt_index_url: Optional[str] = getattr(args, "apt_index_url", None)
+    verbose: bool = args.verbose
+
+    with tempfile.TemporaryDirectory(prefix="abi_scanner_snap_") as tmpdir:
+        tmp = Path(tmpdir)
+
+        libs = _download_and_prepare(spec, tmp / "pkg", library_name,
+                                     verbose, apt_index_url=_apt_index_url)
+        if not libs:
+            print(f"Error: could not obtain library for {spec}", file=sys.stderr)
+            return 1
+
+        saved_dumps = []
+        version_suffix = f"-{spec.version}" if spec.version else ""
+
+        for base_name, lib_path in sorted(libs.items()):
+            dump_name = f"{base_name}{version_suffix}.abi"
+            dump_path = output_dir / dump_name
+
+            ok, reason = _generate_baseline(lib_path, dump_path, verbose)
+            if not ok:
+                print(f"  Warning: abidw failed for {base_name}: {reason}", file=sys.stderr)
+                continue
+
+            size = dump_path.stat().st_size
+            saved_dumps.append({
+                "library": base_name,
+                "path": str(dump_path),
+                "size_bytes": size,
+            })
+            print(f"Saved: {dump_path}")
+
+        if not saved_dumps:
+            print("Error: no dumps were saved (abidw failed for all libraries)", file=sys.stderr)
+            return 1
+
+        # Write manifest
+        manifest_path = output_dir / "snapshot.json"
+        manifest = {
+            "spec": str(spec),
+            "timestamp": _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "dumps": saved_dumps,
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        print(f"Saved: {manifest_path}")
+
+    return 0
 
 def cmd_compatible(args):
     """Find all versions ABI-compatible with the given base version."""
@@ -1275,6 +1363,21 @@ Examples:
   # Compare with local build
   abi-scanner compare conda-forge:dal=2025.9.0 local:./libonedal.so
 
+  # Compare local .deb against published APT release
+  abi-scanner compare \
+    apt:intel-oneapi-dnnl=2025.2.0 \
+    local:/path/to/intel-oneapi-dnnl-custom.deb \
+    --library-name libdnnl.so --fail-on breaking
+
+  # Snapshot a published release for offline comparison
+  abi-scanner snapshot apt:intel-oneapi-dnnl=2025.2.0 \
+    --output-dir ~/.abi-snapshots/dnnl
+
+  # Compare against a pre-saved snapshot (no network needed)
+  abi-scanner compare \
+    dump:~/.abi-snapshots/dnnl/libdnnl.so-2025.2.abi \
+    local:/path/to/my-build/libdnnl.so --fail-on breaking
+
   # APT package comparison
   abi-scanner compare apt:intel-oneapi-ccl=2021.14.0 apt:intel-oneapi-ccl=2021.15.0
 
@@ -1292,6 +1395,17 @@ Exit codes:
     parser.add_argument("--version", action="version", version="%(prog)s 0.2.0-dev")
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # snapshot
+    snap = subparsers.add_parser("snapshot",
+        help="Download a package, generate .abi dump, and save for offline comparison")
+    snap.add_argument("spec", help="Package spec (channel:package=version)")
+    snap.add_argument("--output-dir", required=True, metavar="DIR",
+                      help="Directory to save .abi dump files and snapshot.json manifest")
+    snap.add_argument("--library-name", help="Target .so filename (e.g. libdnnl.so)")
+    snap.add_argument("--apt-index-url", metavar="URL",
+                      help="Custom APT Packages.gz URL for apt channel packages.")
+    snap.add_argument("-v", "--verbose", action="store_true")
 
     # compare
     cp = subparsers.add_parser("compare", help="Compare ABI between two package versions")
@@ -1390,6 +1504,7 @@ def main():
         "compatible": cmd_compatible,
         "validate":   cmd_validate,
         "list":       cmd_list,
+        "snapshot":   cmd_snapshot,
     }
     return handlers[args.command](args)
 
