@@ -1,0 +1,182 @@
+Temporary header file '/tmp/D2xNTPmuQ2/dump2.h' with the following content will be compiled to create GCC translation unit dump:
+
+  // add includes
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_config.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_common.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_common.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_common_types.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_debug.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_ocl.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_ocl.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_sycl.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_sycl.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_types.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_ocl.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_ocl.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_ocl_types.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl_types.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_threadpool.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_threadpool.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_threadpool_iface.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_types.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_ukernel.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_ukernel.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_ukernel_types.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_version.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_version_hash.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_config.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_debug.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_ocl.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_ocl.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_sycl.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_sycl.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_sycl_types.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_threadpool.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_threadpool.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_threadpool_iface.hpp"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_types.h"
+  #include "/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/dnnl_version.h"
+
+  // add namespaces
+  namespace dnnl{typedef int tmp_add_type_1;}
+  dnnl::tmp_add_type_1 tmp_add_func_1(){return 0;};
+  namespace dnnl{namespace graph{typedef int tmp_add_type_2;}}
+  dnnl::graph::tmp_add_type_2 tmp_add_func_2(){return 0;};
+  namespace dnnl{namespace ukernel{typedef int tmp_add_type_3;}}
+  dnnl::ukernel::tmp_add_type_3 tmp_add_func_3(){return 0;};
+  namespace oneapi{typedef int tmp_add_type_4;}
+  oneapi::tmp_add_type_4 tmp_add_func_4(){return 0;};
+  namespace dnnl{namespace graph{namespace ocl_interop{typedef int tmp_add_type_5;}}}
+  dnnl::graph::ocl_interop::tmp_add_type_5 tmp_add_func_5(){return 0;};
+  namespace dnnl{namespace graph{namespace sycl_interop{typedef int tmp_add_type_6;}}}
+  dnnl::graph::sycl_interop::tmp_add_type_6 tmp_add_func_6(){return 0;};
+  namespace dnnl{namespace ocl_interop{typedef int tmp_add_type_7;}}
+  dnnl::ocl_interop::tmp_add_type_7 tmp_add_func_7(){return 0;};
+  namespace dnnl{namespace sycl_interop{typedef int tmp_add_type_8;}}
+  dnnl::sycl_interop::tmp_add_type_8 tmp_add_func_8(){return 0;};
+  namespace dnnl{namespace threadpool_interop{typedef int tmp_add_type_9;}}
+  dnnl::threadpool_interop::tmp_add_type_9 tmp_add_func_9(){return 0;};
+
+  // add classes
+  _G_fpos64_t* tmp_add_class_0;
+  _G_fpos_t* tmp_add_class_1;
+  _IO_cookie_io_functions_t* tmp_add_class_2;
+  _cl_buffer_region* tmp_add_class_3;
+  _cl_image_desc* tmp_add_class_4;
+  _cl_image_format* tmp_add_class_5;
+
+The GCC parameters:
+  gcc -fdump-lang-raw -fkeep-inline-functions -c -x c++ -fpermissive -w "/tmp/D2xNTPmuQ2/dump2.h"  -I/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include
+
+In file included from /tmp/D2xNTPmuQ2/dump2.h:15:
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_sycl.hpp:29:2: error: #error "Unsupported compiler"
+   29 | #error "Unsupported compiler"
+      |  ^~~~~
+In file included from /tmp/D2xNTPmuQ2/dump2.h:21:
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:32:2: error: #error "Unsupported compiler"
+   32 | #error "Unsupported compiler"
+      |  ^~~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_sycl.hpp:73:48: error: ‘sycl’ does not name a type
+   73 | inline engine make_engine_with_allocator(const sycl::device &adevice,
+      |                                                ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_sycl.hpp:73:61: error: expected unqualified-id before ‘&’ token
+   73 | inline engine make_engine_with_allocator(const sycl::device &adevice,
+      |                                                             ^
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_sycl.hpp:73:60: error: expected ‘)’ before ‘&’ token
+   73 | inline engine make_engine_with_allocator(const sycl::device &adevice,
+      |                                         ~                  ^~
+      |                                                            )
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_sycl.hpp:73:62: error: expected initializer before ‘adevice’
+   73 | inline engine make_engine_with_allocator(const sycl::device &adevice,
+      |                                                              ^~~~~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_sycl.hpp:93:8: error: ‘sycl’ does not name a type
+   93 | inline sycl::event execute(compiled_partition &c_partition, stream &astream,
+      |        ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_graph_sycl.hpp:95:50: error: expected unqualified-id before ‘)’ token
+   95 |         const std::vector<sycl::event> &deps = {}) {
+      |                                                  ^
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:80:15: error: ‘sycl’ does not name a type
+   80 |         const sycl::device &adevice, const sycl::context &acontext) {
+      |               ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:80:28: error: expected unqualified-id before ‘&’ token
+   80 |         const sycl::device &adevice, const sycl::context &acontext) {
+      |                            ^
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:80:27: error: expected ‘)’ before ‘&’ token
+   80 |         const sycl::device &adevice, const sycl::context &acontext) {
+      |                           ^~
+      |                           )
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:79:26: note: to match this ‘(’
+   79 | inline engine make_engine(
+      |                          ^
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:80:29: error: expected initializer before ‘adevice’
+   80 |         const sycl::device &adevice, const sycl::context &acontext) {
+      |                             ^~~~~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:94:8: error: ‘sycl’ does not name a type
+   94 | inline sycl::context get_context(const engine &aengine) {
+      |        ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:108:8: error: ‘sycl’ does not name a type
+  108 | inline sycl::device get_device(const engine &aengine) {
+      |        ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:124:50: error: ‘sycl’ has not been declared
+  124 | inline stream make_stream(const engine &aengine, sycl::queue &aqueue) {
+      |                                                  ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:124:62: error: expected ‘,’ or ‘...’ before ‘&’ token
+  124 | inline stream make_stream(const engine &aengine, sycl::queue &aqueue) {
+      |                                                              ^
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp: In function ‘dnnl::stream dnnl::sycl_interop::make_stream(const dnnl::engine&, int)’:
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:127:71: error: ‘aqueue’ was not declared in this scope; did you mean ‘queue’?
+  127 |             dnnl_sycl_interop_stream_create(&astream, aengine.get(), &aqueue),
+      |                                                                       ^~~~~~
+      |                                                                       queue
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp: At global scope:
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:137:8: error: ‘sycl’ does not name a type
+  137 | inline sycl::queue get_queue(const stream &astream) {
+      |        ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:157:1: error: ‘sycl’ does not name a type
+  157 | sycl::buffer<T, ndims> get_buffer(const memory &amemory) {
+      | ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:188:34: error: ‘sycl’ has not been declared
+  188 | void set_buffer(memory &amemory, sycl::buffer<T, ndims> &abuffer) {
+      |                                  ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:188:46: error: expected ‘,’ or ‘...’ before ‘<’ token
+  188 | void set_buffer(memory &amemory, sycl::buffer<T, ndims> &abuffer) {
+      |                                              ^
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp: In function ‘void dnnl::sycl_interop::set_buffer(dnnl::memory&, int)’:
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:189:18: error: ‘sycl’ has not been declared
+  189 |     auto range = sycl::range<1>(abuffer.byte_size());
+      |                  ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:189:33: error: ‘abuffer’ was not declared in this scope; did you mean ‘buffer’?
+  189 |     auto range = sycl::range<1>(abuffer.byte_size());
+      |                                 ^~~~~~~
+      |                                 buffer
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:190:55: error: expected primary-expression before ‘,’ token
+  190 |     auto buf_u8 = abuffer.template reinterpret<uint8_t, 1>(range);
+      |                                                       ^
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp: At global scope:
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:293:9: error: ‘sycl’ has not been declared
+  293 |         sycl::buffer<T, ndims> &abuffer) {
+      |         ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:293:21: error: expected ‘,’ or ‘...’ before ‘<’ token
+  293 |         sycl::buffer<T, ndims> &abuffer) {
+      |                     ^
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp: In function ‘dnnl::memory dnnl::sycl_interop::make_memory(const dnnl::memory::desc&, const dnnl::engine&, int)’:
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:295:25: error: ‘abuffer’ was not declared in this scope; did you mean ‘buffer’?
+  295 |     set_buffer(amemory, abuffer);
+      |                         ^~~~~~~
+      |                         buffer
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp: At global scope:
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:316:8: error: ‘sycl’ does not name a type
+  316 | inline sycl::event execute(const dnnl::primitive &aprimitive,
+      |        ^~~~
+/home/ubuntu/.cache/abi_cache/apt_devel_extract_2025.3.0-409/opt/intel/oneapi/dnnl/2025.3/include/oneapi/dnnl/dnnl_sycl.hpp:318:50: error: expected unqualified-id before ‘)’ token
+  318 |         const std::vector<sycl::event> &deps = {}) {
+      |                                                  ^
+

@@ -26,6 +26,8 @@ embedded firmware all depend on ABI stability for safe rolling upgrades.
 > Type changes, vtable reorderings, and struct growth return exit 4.  
 > Both should be treated as breaking by release policy.
 
+---
+
 ## Case Index
 
 | # | Case | Category | abidiff exit | Root cause |
@@ -44,12 +46,77 @@ embedded firmware all depend on ABI stability for safe rolling upgrades.
 | [12](case12_function_removed/README.md) | Function Disappears | Symbol API | 12 🔴 | Function moved to inline, vanishes from .so |
 | [13](case13_symbol_versioning/README.md) | Symbol Versioning | ELF/Linker | — 🟡 | No version script → no `@@VER` on symbols |
 | [14](case14_cpp_class_size/README.md) | C++ Class Size Change | C++ ABI | 4 🟡 | Private member grows, sizeof(class) changes |
+| [15](case15_noexcept_change/README.md) | noexcept Removed | C++ ABI | 0 ❌ | noexcept guarantee dropped; DWARF-invisible |
+| [16](case16_inline_to_non_inline/README.md) | Inline → Non-inline | C++ ABI | — ⚠️ | ODR violation; symbol appears in v2 .so |
+| [17](case17_template_abi/README.md) | Template Layout Change | C++ ABI | 4 🟡 | Explicit-instantiated template grows in size |
+| [18](case18_dependency_leak/README.md) | Dependency ABI Leak | Type Layout | — ⚠️ | Third-party type in public header changes layout |
+
+---
+
+## Tool Comparison Matrix
+
+Which tool catches which ABI break? Three modes are compared — see
+[`docs/tool_modes.md`](../docs/tool_modes.md) for a full explanation of each mode.
+
+| Case | Description | abidiff | ABICC+headers | ABICC+dump |
+|------|-------------|:-------:|:-------------:|:----------:|
+| 01 | Symbol removal | ✅ | ✅ | ✅ |
+| 02 | Param type change | ✅ | ✅ | ✅ |
+| 03 | Compatible addition | ✅ | ✅ | ✅ |
+| 04 | No change | ✅ | ✅ | ✅ |
+| 05 | SONAME missing | ❌ | ❌ | ❌ |
+| 06 | Visibility leak | ✅ | ❌ | ❌ |
+| 07 | Struct layout | ⚠️ | ✅ | ✅ |
+| 08 | Enum value | ⚠️ | ✅ | ✅ |
+| 09 | vtable change | ⚠️ | ✅ | ✅ |
+| 10 | Return type | ⚠️ | ✅ | ✅ |
+| 11 | Global var type | ⚠️ | ✅ | ✅ |
+| 12 | Inline→removed | ❌ | ✅ | ❌ |
+| 13 | Symbol versioning | ❌ | ❌ | ❌ |
+| 14 | Class size | ⚠️ | ✅ | ✅ |
+| 15 | noexcept removed | ❌ | ✅ | ❌ |
+| 16 | inline→non-inline | ❌ | ✅ | ❌ |
+| 17 | Template ABI | ⚠️ | ✅ | ✅ |
+| 18 | Dependency leak | ⚠️ | ✅ | ✅ |
+
+**Legend:**
+- ✅ = catches the break reliably
+- ❌ = misses the break
+- ⚠️ = catches only when `.so` compiled with `-g` (DWARF debug info present)
+- N/A = not applicable (no meaningful check possible)
+
+> **Cases 05 and 13** are informational/policy issues, not binary breaks — no tool
+> treats them as failures by default.
+
+### Column definitions
+
+| Column | Tool | Input | Needs DWARF? | Needs headers? |
+|--------|------|-------|:------------:|:--------------:|
+| **abidiff** | `abidiff` (libabigail) | two `.so` files | optional | ❌ |
+| **ABICC+headers** | `abi-compliance-checker` (headers-only mode) | `.so` + headers | ❌ | ✅ |
+| **ABICC+dump** | `abi-compliance-checker` + `abi-dumper` | `.so -g` + headers | ✅ required | optional |
+
+See [`docs/tool_modes.md`](../docs/tool_modes.md) for detailed explanations,
+requirements, limitations, and the combined pipeline decision flowchart.
+
+### Key takeaways
+
+1. **abidiff on stripped `.so`** (no `-g`) degrades to symbol-table-only — misses
+   all type layout changes (cases 07–11, 14, 17, 18 become ❌).
+2. **ABICC+headers** is the most universally applicable — works on production `.so`,
+   catches semantic C++ changes abidiff is blind to (cases 15, 16).
+3. **ABICC+dump** is the most accurate when debug `.so` is available — DWARF is the
+   ground truth for compiled types; headers can have misleading macros.
+4. **Neither tool alone is sufficient** — the `abi-scanner` pipeline runs both
+   abidiff and ABICC+headers and uses a worst-of combined verdict.
+
+---
 
 ## Quick start
 
 ```bash
 # Install tools (Ubuntu/Debian)
-sudo apt-get install gcc g++ binutils abigail-tools
+sudo apt-get install gcc g++ binutils abigail-tools abi-compliance-checker
 
 # Run all integration tests
 cd <repo-root>
@@ -64,3 +131,67 @@ abidw --out-file v1.xml libv1.so
 abidw --out-file v2.xml libv2.so
 abidiff v1.xml v2.xml
 ```
+
+---
+
+## Dependency ABI Leaks
+
+A **dependency ABI leak** occurs when your public header `#include`s a type from
+a third-party library, and that type's layout changes between versions.
+
+### Why it's insidious
+
+Your library's `.so` file is **byte-for-byte identical**. `nm`, `readelf`, and naive
+`abidiff` see nothing suspicious. But callers compiled against the old headers pass
+structs of the wrong size, causing heap corruption, stack smashes, or wrong results.
+
+### Common culprits
+
+| Library | Exposed types | Risk |
+|---------|--------------|------|
+| Intel TBB | `tbb::task_arena`, `tbb::mutex` | oneDAL includes these in public headers |
+| Boost | `boost::shared_ptr`, `boost::optional` | Layout differs between Boost versions |
+| protobuf | `google::protobuf::Message` | Proto3/ABI breakage between major versions |
+| libstdc++ | `std::string` (CXX11 ABI) | Changed in GCC 5.x — broke entire ecosystems |
+| Intel MKL | `MKL_Complex8`, sparse handles | Version-dependent layout |
+
+### Intel-specific examples
+
+**oneDAL** — Several oneDAL public headers (e.g. `data_management/data/numeric_table.h`)
+expose `tbb::task_arena` references. When Intel TBB changed `task_arena`'s internal
+layout in TBB 2021.3, oneDAL's ABI broke for users who had TBB 2021.2 installed.
+The `.so` files hadn't changed.
+
+**oneDNN** — Early versions exposed internal `dnnl::impl::*` types in semi-public
+headers. This required a major ABI break (`v1.x → v2.x`) to clean up.
+
+### Best practices
+
+1. **Pimpl idiom** — hide implementation details behind a pointer to an incomplete type:
+   ```cpp
+   // foo.h
+   class Foo {
+   public:
+       Foo();
+       ~Foo();
+       void run();
+   private:
+       struct Impl;          // forward declaration only
+       Impl* pImpl_;         // no third-party types here
+   };
+   ```
+
+2. **Opaque C handles** — for C APIs, use typedefs to incomplete structs:
+   ```c
+   typedef struct foo_context foo_context_t;  // opaque
+   foo_context_t* foo_create(void);
+   void           foo_destroy(foo_context_t* ctx);
+   ```
+
+3. **Version your dependencies** — if you must expose a type, document the exact
+   version requirement and check it at CMake configure time.
+
+4. **Use abi-scanner** — run ABICC with `--header-include-path` pointing at all
+   transitive dependency headers to detect leaks before release.
+
+See [case18_dependency_leak](case18_dependency_leak/README.md) for a runnable example.

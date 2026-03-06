@@ -296,3 +296,191 @@ def test_examples_catalog_complete():
     d = examples_dir()
     dirs = sorted(p.name for p in d.iterdir() if p.is_dir())
     assert len(dirs) >= 14, f"Expected 14 case dirs, found {len(dirs)}: {dirs}"
+
+
+# ── Case 15: noexcept change ──────────────────────────────────────────────────
+
+def test_noexcept_change_symbol_stable(tmp_path):
+    """Case 15: noexcept removal doesn't change symbol names on GCC/Clang.
+
+    abidiff misses this; the symbol is present in both .so files unchanged.
+    The ABI breakage is semantic (exception-handling assumptions).
+    See examples/case15_noexcept_change/README.md.
+    """
+    src_v1 = tmp_path / "v1.cpp"
+    src_v1.write_text("""
+class Buffer {
+public:
+    Buffer();
+    ~Buffer();
+    void reset() noexcept;
+private:
+    int* data_;
+    int  size_;
+};
+Buffer::Buffer() : data_(new int[64]), size_(64) {}
+Buffer::~Buffer() { delete[] data_; }
+void Buffer::reset() noexcept { for (int i=0; i<size_; ++i) data_[i]=0; }
+""")
+    src_v2 = tmp_path / "v2.cpp"
+    src_v2.write_text("""
+class Buffer {
+public:
+    Buffer();
+    ~Buffer();
+    void reset();   // noexcept removed
+private:
+    int* data_;
+    int  size_;
+};
+Buffer::Buffer() : data_(new int[64]), size_(64) {}
+Buffer::~Buffer() { delete[] data_; }
+void Buffer::reset() { for (int i=0; i<size_; ++i) data_[i]=0; }
+""")
+
+    so_v1 = compile_so(src_v1, tmp_path / "libv1.so", extra=["-std=c++17", "-g"])
+    so_v2 = compile_so(src_v2, tmp_path / "libv2.so", extra=["-std=c++17", "-g"])
+
+    def has_reset(so):
+        r = subprocess.run(["nm", "--dynamic", str(so)],
+                           capture_output=True, text=True)
+        return any("reset" in ln for ln in r.stdout.splitlines())
+
+    # Symbol exists in both versions (noexcept doesn't change mangled name for members)
+    assert has_reset(so_v1), "v1 must export reset()"
+    assert has_reset(so_v2), "v2 must export reset()"
+
+
+# ── Case 16: inline → non-inline ─────────────────────────────────────────────
+
+def test_inline_to_non_inline_symbol_appears(tmp_path):
+    """Case 16: inline function moving to .so means v1 has NO symbol, v2 has it.
+
+    This demonstrates the ODR hazard: callers with inlined v1 + linked v2 .so
+    may have two definitions.
+    See examples/case16_inline_to_non_inline/README.md.
+    """
+    src_v1 = tmp_path / "v1.cpp"
+    src_v1.write_text("// empty: fast_hash is header-only inline\n")
+
+    src_v2 = tmp_path / "v2.cpp"
+    src_v2.write_text("""
+int fast_hash(int x) {
+    return (int)((unsigned)x * 2654435761U);
+}
+""")
+
+    so_v1 = compile_so(src_v1, tmp_path / "libv1.so", extra=["-std=c++17"])
+    so_v2 = compile_so(src_v2, tmp_path / "libv2.so", extra=["-std=c++17"])
+
+    def has_fast_hash(so):
+        r = subprocess.run(["nm", "--dynamic", "--defined-only", str(so)],
+                           capture_output=True, text=True)
+        return any("fast_hash" in ln for ln in r.stdout.splitlines())
+
+    assert not has_fast_hash(so_v1), "v1 .so must NOT export fast_hash (it's inline)"
+    assert     has_fast_hash(so_v2), "v2 .so must export fast_hash"
+
+
+# ── Case 17: template layout change ──────────────────────────────────────────
+
+def test_template_abi_sizeof_change(tmp_path):
+    """Case 17: explicit template instantiation size change detected via DWARF.
+
+    With -g, abidiff catches the sizeof change. Without -g it misses it.
+    See examples/case17_template_abi/README.md.
+    """
+    src_v1 = tmp_path / "v1.cpp"
+    src_v1.write_text("""
+#include <cstddef>
+template<typename T>
+struct Buffer {
+    T*          data_;
+    std::size_t size_;
+    Buffer(std::size_t n) : data_(new T[n]), size_(n) {}
+    ~Buffer() { delete[] data_; }
+    T* data() { return data_; }
+    std::size_t size() const { return size_; }
+};
+template struct Buffer<int>;
+""")
+
+    src_v2 = tmp_path / "v2.cpp"
+    src_v2.write_text("""
+#include <cstddef>
+template<typename T>
+struct Buffer {
+    T*          data_;
+    std::size_t size_;
+    std::size_t capacity_;  // NEW field
+    Buffer(std::size_t n) : data_(new T[n]), size_(n), capacity_(n) {}
+    ~Buffer() { delete[] data_; }
+    T* data() { return data_; }
+    std::size_t size() const { return size_; }
+    std::size_t capacity() const { return capacity_; }
+};
+template struct Buffer<int>;
+""")
+
+    so_v1 = compile_so(src_v1, tmp_path / "libv1.so", extra=["-std=c++17", "-g"])
+    so_v2 = compile_so(src_v2, tmp_path / "libv2.so", extra=["-std=c++17", "-g"])
+
+    # Both .so files export Buffer<int> constructor
+    def has_buffer_int(so):
+        r = subprocess.run(["nm", "--dynamic", str(so)],
+                           capture_output=True, text=True)
+        return any("Buffer" in ln and "int" in ln for ln in r.stdout.splitlines())
+
+    assert has_buffer_int(so_v1), "v1 must export Buffer<int>"
+    assert has_buffer_int(so_v2), "v2 must export Buffer<int>"
+
+    # abidiff with DWARF should report a change
+    result = run_abidiff(so_v1, so_v2, tmp_path)
+    assert result.returncode != 0, (
+        "abidiff should detect Buffer<int> layout change with DWARF present"
+    )
+
+
+# ── Case 18: dependency ABI leak ──────────────────────────────────────────────
+
+def test_dependency_leak_so_identical(tmp_path):
+    """Case 18: libfoo .so is identical in both versions; break is in headers.
+
+    This verifies that naive .so comparison misses the dependency ABI leak.
+    See examples/case18_dependency_leak/README.md.
+    """
+    src_v1 = tmp_path / "v1.c"
+    src_v1.write_text("""
+typedef struct { int x; } ThirdPartyHandle;
+void process(ThirdPartyHandle* h) { (void)h; }
+int  get_value(const ThirdPartyHandle* h) { return h->x; }
+""")
+
+    src_v2 = tmp_path / "v2.c"
+    src_v2.write_text("""
+typedef struct { int x; int y; } ThirdPartyHandle;
+void process(ThirdPartyHandle* h) { (void)h; }
+int  get_value(const ThirdPartyHandle* h) { return h->x; }
+""")
+
+    so_v1 = compile_so(src_v1, tmp_path / "libv1.so")
+    so_v2 = compile_so(src_v2, tmp_path / "libv2.so")
+
+    # Symbol tables should be identical (same function names, no layout in symtab)
+    def exported_syms(so):
+        r = subprocess.run(["nm", "--dynamic", "--defined-only", str(so)],
+                           capture_output=True, text=True)
+        return sorted(ln.split()[-1] for ln in r.stdout.splitlines() if ln.strip())
+
+    assert exported_syms(so_v1) == exported_syms(so_v2), (
+        "Symbol tables must be identical — dependency leak is invisible at .so level"
+    )
+
+
+# ── Updated smoke test ────────────────────────────────────────────────────────
+
+def test_examples_catalog_complete_18():
+    """Verify examples/ directory contains all 18 scenario subdirs."""
+    d = examples_dir()
+    dirs = sorted(p.name for p in d.iterdir() if p.is_dir())
+    assert len(dirs) >= 18, f"Expected 18 case dirs, found {len(dirs)}: {dirs}"
