@@ -52,7 +52,11 @@ def safe_extract_tar(tar: tarfile.TarFile, extract_dir: Path):
         
         # Extract regular files and directories only
         if member.isfile() or member.isdir():
-            tar.extract(member, extract_dir)
+            try:
+                tar.extract(member, extract_dir, filter='data')
+            except TypeError:
+                # Python < 3.12 doesn't support filter= parameter
+                tar.extract(member, extract_dir)
 
 
 def safe_extract_zip(zf: zipfile.ZipFile, extract_dir: Path):

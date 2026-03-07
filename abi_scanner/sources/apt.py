@@ -9,13 +9,14 @@ import gzip
 import re
 import urllib.request
 import urllib.error
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote as _url_unquote
 
 from .base import PackageSource
 from .utils import safe_extract_tar
 
 
 import os
+import tempfile
 import time
 import hashlib as _hashlib
 
@@ -51,7 +52,25 @@ def _fetch_apt_index(url: str) -> str:
             return cache_file.read_text(encoding="utf-8")
         raise
 
-    cache_file.write_text(data, encoding="utf-8")
+    tmp_fd, tmp_str = tempfile.mkstemp(dir=cache_file.parent, suffix='.tmp')
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(tmp_fd, 'w', encoding='utf-8') as tmp_file:
+            tmp_fd = None  # fdopen takes ownership
+            tmp_file.write(data)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        tmp_path.replace(cache_file)  # atomic on POSIX
+        tmp_path = None
+    except Exception:
+        if tmp_fd is not None:
+            try:
+                os.close(tmp_fd)
+            except OSError:
+                pass
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
     return data
 
 
@@ -154,17 +173,26 @@ class AptSource(PackageSource):
             if pm and vm and fm:
                 if pm.group(1).strip() == package_name and vm.group(1).strip() == version:
                     rel_path = fm.group(1).strip()
-                    # Fix 5: Validate rel_path to prevent path traversal / SSRF
-                    if not re.match(r'^[a-zA-Z0-9_./%+-]+$', rel_path) or '..' in rel_path:
+                    # Decode percent-encoding before validation to prevent %2e%2e bypass
+                    rel_path_decoded = _url_unquote(rel_path)
+                    if not re.match(r'^[a-zA-Z0-9_./+-]+$', rel_path_decoded) or '..' in rel_path_decoded:
                         raise ValueError(f"Suspicious rel_path in APT index: {rel_path!r}")
                     full_url = f"{base}/{rel_path}"
                     # Verify resulting URL still has the same host as base
                     if urlparse(full_url).netloc != urlparse(base).netloc:
                         raise ValueError(f"URL host mismatch after rel_path: {full_url}")
-                    # Fix 4: Extract and store SHA256 for download verification (URL-bound)
+                    # Extract and store SHA256 for download verification (URL-bound)
                     sha256_m = re.search(r"^SHA256: (.+)$", block, re.M)
                     if sha256_m:
                         self._pending_sha256s[full_url] = sha256_m.group(1).strip()
+                    else:
+                        import warnings
+                        warnings.warn(
+                            f"No SHA256 checksum in APT index for {package_name}={version}. "
+                            "Download will proceed unverified.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
                     return full_url
 
         raise ValueError(
@@ -249,8 +277,20 @@ class AptSource(PackageSource):
         
         # Check if already downloaded
         if output_file.exists():
-            print(f"✓ {filename} already downloaded", file=sys.stderr)
-            return output_file
+            # If we have a pending SHA256 for this URL, verify before trusting cache
+            pending = self._pending_sha256s.get(url)
+            if pending:
+                actual = _hashlib.sha256(output_file.read_bytes()).hexdigest()
+                if actual != pending:
+                    output_file.unlink(missing_ok=True)
+                    # Fall through to re-download
+                else:
+                    self._pending_sha256s.pop(url, None)
+                    print(f"✓ {filename} already downloaded (SHA256 verified)", file=sys.stderr)
+                    return output_file
+            else:
+                print(f"✓ {filename} already downloaded", file=sys.stderr)
+                return output_file
         
         # Download
         print(f"Downloading {url}...", file=sys.stderr)
@@ -300,7 +340,6 @@ class AptSource(PackageSource):
         # .deb structure: ar archive with debian-binary, control.tar.*, data.tar.*
         # We only need data.tar.* (contains actual files)
         
-        import tempfile
         import tarfile
         
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -36,9 +36,17 @@ def _pick_library(libs: dict, library_name: Optional[str]) -> "Optional[tuple[st
         return library_name, libs[library_name]
     if len(libs) == 1:
         return next(iter(libs.items()))
-    # Multiple libs, no specific name — pick deterministically by sorted base name
+    # Multiple libraries, no explicit name — warn and pick deterministically
     sorted_items = sorted(libs.items(), key=lambda kv: kv[0])
-    return sorted_items[0]
+    chosen_name, chosen_path = sorted_items[0]
+    import warnings
+    warnings.warn(
+        f"Multiple libraries found: {list(libs.keys())}. "
+        f"Using '{chosen_name}'. Use --library-name to specify explicitly.",
+        UserWarning,
+        stacklevel=3,
+    )
+    return chosen_name, chosen_path
 
 
 def _find_libraries(search_dir: Path, library_name: Optional[str],
@@ -1072,22 +1080,42 @@ def cmd_validate(args):
                 # Guard against None entries (defensive; get_abi always returns dicts)
                 old_entry = old_abi.get(base) if old_abi else None
                 new_entry = new_abi.get(base) if new_abi else None
-                if base not in new_abi or new_entry is None:
-                    r = ABIComparisonResult(
-                        verdict=ABIVerdict.BREAKING,
-                        exit_code=12,
-                        baseline_old=str(old_abi[base]["so"]),
-                        baseline_new="",
-                        functions_removed=1
-                    )
-                elif base not in old_abi or old_entry is None:
+                if old_entry is None and new_entry is None:
+                    continue  # library absent from both — skip
+                elif old_entry is None and new_entry is not None:
+                    # New library appeared — treat as COMPATIBLE (addition)
                     r = ABIComparisonResult(
                         verdict=ABIVerdict.COMPATIBLE,
                         exit_code=4,
                         baseline_old="",
-                        baseline_new=str(new_abi[base]["so"]),
-                        functions_added=1
+                        baseline_new=str(new_entry["so"]),
+                        functions_added=1,
+                        stdout=f"[new library appeared: {base}]",
                     )
+                    r.binary_name_old = ""
+                    r.binary_name_new = new_entry["so"].name
+                    lib_results[base] = r
+                    if r.exit_code > worst_exit:
+                        worst_exit = r.exit_code
+                        worst_result = r
+                    continue
+                elif new_entry is None and old_entry is not None:
+                    # Library removed — BREAKING
+                    r = ABIComparisonResult(
+                        verdict=ABIVerdict.BREAKING,
+                        exit_code=12,
+                        baseline_old=str(old_entry["so"]),
+                        baseline_new="",
+                        functions_removed=1,
+                        stdout=f"[library removed: {base}]",
+                    )
+                    r.binary_name_old = old_entry["so"].name
+                    r.binary_name_new = ""
+                    lib_results[base] = r
+                    if r.exit_code > worst_exit:
+                        worst_exit = r.exit_code
+                        worst_result = r
+                    continue
                 elif old_entry["abi"] and new_entry["abi"]:
                     r = analyzer.compare(old_entry["abi"], new_entry["abi"], api_filter, api_filter)
                 else:
