@@ -280,8 +280,7 @@ class AptSource(PackageSource):
             # If we have a pending SHA256 for this URL, verify before trusting cache
             pending = self._pending_sha256s.get(url)
             if pending:
-                import hashlib as _hl
-                actual = _hl.sha256(output_file.read_bytes()).hexdigest()
+                actual = _hashlib.sha256(output_file.read_bytes()).hexdigest()
                 if actual != pending:
                     output_file.unlink(missing_ok=True)
                     # Fall through to re-download
