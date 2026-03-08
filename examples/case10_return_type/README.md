@@ -29,6 +29,33 @@ abidiff v1.xml v2.xml
 echo "exit: $?"   # → 4
 ```
 
+## Real Failure Demo
+
+**Severity: CRITICAL**
+
+**Scenario:** compile `app` against v1 (`get_count` returns `int`), swap in v2 `.so` which returns `long 3000000000`.
+
+```bash
+# Step 1: build with v1
+gcc -shared -fPIC -g v1.c -o libfoo.so
+gcc -g app.c -L. -lfoo -Wl,-rpath,. -o app
+./app
+# Output:
+# Expected: 42 (v1) or 3000000000 (v2 demo)
+# Got (as int): 42
+# OK — v1 baseline
+
+# Step 2: swap in v2 (no recompile)
+gcc -shared -fPIC -g v2.c -o libfoo.so
+./app
+# Output:
+# Expected: 42 (v1) or 3000000000 (v2 demo)
+# Got (as int): -1294967296
+# TRUNCATION: v2 returned 3000000000L, int reads only low 32 bits → -1294967296
+```
+
+**Why:** On x86-64, `long` is returned in the full 64-bit `rax` register; old code compiled against `int` zero-extends only the lower 32 bits of `rax` — silently reading a wrong, negative truncated value.
+
 ## How to fix
 Add a new function with the new return type (e.g., `get_count_ex()` returning `long`)
 and deprecate the old one. Change the SONAME on the major version bump when the old

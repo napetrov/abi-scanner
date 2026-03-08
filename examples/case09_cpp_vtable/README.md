@@ -34,6 +34,35 @@ abidiff v1.xml v2.xml
 echo "exit: $?"   # → 4
 ```
 
+## Real Failure Demo
+
+**Severity: CRITICAL**
+
+**Scenario:** compile `app` against v1 vtable layout, swap in v2 `.so` which has `recolor()` inserted at slot 1.
+
+```bash
+# Step 1: build with v1
+g++ -shared -fPIC -g v1.cpp -o libwidget.so
+g++ -g app.cpp -L. -lwidget -Wl,-rpath,. -o app
+./app
+# Output:
+# draw()   = 10 (expected 10)
+# resize() = 20 (expected 20)
+# OK — resize() correct
+
+# Step 2: swap in v2 (no recompile)
+g++ -shared -fPIC -g v2.cpp -o libwidget.so
+./app
+# Output:
+# draw()   = 10 (expected 10)
+# resize() = 99 (expected 20)
+# WRONG: resize() returned 99 — vtable slot 1 now points to recolor()!
+#        v2 vtable: [draw=slot0, recolor=slot1, resize=slot2]
+#        App called slot1 expecting resize(20), got recolor(99)
+```
+
+**Why:** The app's vtable call `slot[1]` is compiled in and cannot change without recompilation; v2 placed `recolor()` at slot 1, so every `widget->resize()` call silently dispatches to `recolor()` — wrong return value, potentially wrong side-effects.
+
 ## How to fix
 Only append new virtual methods — never insert them in the middle of the vtable.
 Alternatively, use the non-virtual interface (NVI) pattern: make only a few virtual

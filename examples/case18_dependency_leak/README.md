@@ -27,6 +27,64 @@ ThirdPartyHandle arr[10];  // caller: 40 bytes total
 **libfoo.so is byte-for-byte identical** in both scenarios. Only the headers changed.
 `nm`, `readelf`, and naive `abidiff` see no difference in the `.so`.
 
+# Case 18 — Dependency ABI Leak
+
+## What changes
+
+`libfoo` itself is **source-identical** between v1 and v2.
+The breaking change is in `ThirdPartyHandle`, a type from a third-party library
+that `libfoo` **exposes in its public header**.
+
+| Version | `ThirdPartyHandle` layout |
+|---------|--------------------------|
+| v1 | `{ int x; }` → sizeof = 4 bytes |
+| v2 | `{ int x; int y; }` → sizeof = 8 bytes |
+
+## What breaks at binary level
+
+A caller compiled with v1 headers allocates `ThirdPartyHandle h = {42}` — 4 bytes.
+It passes `&h` to `process()`. The v2 `.so` was compiled with the new layout and
+may access `h->y` (at offset 4) — reading garbage or unmapped memory.
+
+Even if `libfoo` itself doesn't access `y`, the caller's `sizeof(ThirdPartyHandle)`
+mismatch means array indexing is wrong:
+```c
+ThirdPartyHandle arr[10];  // caller: 40 bytes total
+                            // library: expects 80 bytes (10 × 8)
+```
+
+**libfoo.so is byte-for-byte identical** in both scenarios. Only the headers changed.
+`nm`, `readelf`, and naive `abidiff` see no difference in the `.so`.
+
+## Real Failure Demo
+
+**Severity: CRITICAL**
+
+**Scenario:** compile `app` against v1 headers (`ThirdPartyHandle` = 4 bytes), swap in v2 `.so` that reads `h.y` from uninitialized memory.
+
+```bash
+# Step 1: build with v1
+gcc -shared -fPIC -g libfoo_v1.c -I. -o libfoo.so
+gcc -g app.c -I. -L. -lfoo -Wl,-rpath,. -o app
+./app
+# Output:
+# Sending h={x=42} (4 bytes) to process()
+# process: x=42
+# get_value() = 42 (expected 42)
+# OK — v1 baseline
+
+# Step 2: swap in v2 (no recompile)
+gcc -shared -fPIC -g libfoo_v2.c -I. -o libfoo.so
+./app
+# Output:
+# Sending h={x=42} (4 bytes) to process()
+# process: x=42 y=32764          ← reads garbage past app's 4-byte struct
+# get_value() = 32806 (expected 42)
+# WRONG: v2 library read h.y from uninitialized memory past the struct!
+```
+
+**Why:** App allocates only 4 bytes for `ThirdPartyHandle` (v1 layout); v2's `process()` and `get_value()` read `h.y` at offset 4 — returning whatever garbage bytes follow on the stack, silently producing wrong results.
+
 ## Why abidiff may catch it (with DWARF)
 
 If `libfoo` is compiled with `-g`, DWARF records `ThirdPartyHandle`'s layout.

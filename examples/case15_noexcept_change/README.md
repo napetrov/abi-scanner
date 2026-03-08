@@ -21,6 +21,50 @@ changes the **exception-handling personality** of call sites:
 The **symbol name itself is identical** in the `.so` (no mangling difference for
 member functions in GCC), so `abidiff` sees no change.
 
+## What breaks at binary level
+
+In the Itanium C++ ABI (GCC/Clang on Linux/macOS) `noexcept` **does** affect the
+mangled name for some function-pointer typedefs (C++17+), and more importantly it
+changes the **exception-handling personality** of call sites:
+
+- Code compiled against v1 wraps calls to `reset()` with an assumption that no
+  unwinding is needed. The compiler may omit landing pads in callers.
+- With v2, `reset()` *can* throw. A caller compiled with v1 headers will not have
+  the landing pad → exception propagates through a `noexcept` frame → `std::terminate`.
+
+The **symbol name itself is identical** in the `.so` (no mangling difference for
+member functions in GCC), so `abidiff` sees no change.
+
+## Real Failure Demo
+
+**Severity: CRITICAL**
+
+**Scenario:** compile `app` against v1 (reset is `noexcept`), swap in v2 `.so` where `reset()` actually throws.
+
+```bash
+# Step 1: build with v1
+g++ -shared -fPIC -g v1.cpp -o libbuf.so
+g++ -g app.cpp -L. -lbuf -Wl,-rpath,. -o app
+./app
+# Output:
+# Creating buffer...
+# Calling reset_buffer()...
+# reset_buffer() returned normally
+# OK — v1 baseline
+
+# Step 2: swap in v2 (no recompile)
+g++ -shared -fPIC -g v2.cpp -o libbuf.so
+./app
+# Output:
+# Creating buffer...
+# Calling reset_buffer()...
+# terminate called after throwing an instance of 'std::runtime_error'
+#   what():  reset failed
+# Aborted (core dumped)
+```
+
+**Why:** v2's `reset()` throws `std::runtime_error`; old code compiled against the `noexcept` v1 signature has no exception handler — the exception propagates through the `noexcept` frame and the C++ runtime calls `std::terminate`, aborting the process.
+
 ## Why abidiff misses it
 
 `abidiff` compares DWARF type information and symbol tables. `noexcept` is **not

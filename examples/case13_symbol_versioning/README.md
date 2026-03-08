@@ -38,6 +38,40 @@ LIBFOO_1.0 {
 };
 ```
 
+## Real Failure Demo
+
+**Severity: INFORMATIONAL**
+
+**Scenario:** build `app` against versioned `good.so`, then try to run it with unversioned `bad.so`.
+
+```bash
+# Step 1: build good.so with version script and link app
+gcc -shared -fPIC -g good.c -Wl,--version-script=libfoo.map -o libfoo.so
+gcc -g app.c -L. -lfoo -Wl,-rpath,. -o app
+./app
+# Output:
+# foo() = 0
+# bar() = 1
+# OK — symbol versioning is a deployment/compat tooling concern, not a crash
+
+# Inspect versioned symbols
+readelf --syms libfoo.so | grep -E 'foo|bar'
+# Output: foo@@LIBFOO_1.0   bar@@LIBFOO_1.0
+
+# Step 2: swap in bad.so (no version script, no recompile)
+gcc -shared -fPIC -g bad.c -o libfoo.so
+./app 2>&1 || true
+# Output:
+# ./app: ./libfoo.so: no version information available (required by ./app)
+# Inconsistency detected by ld.so: ... Assertion failed!
+
+# Inspect unversioned symbols
+readelf --syms libfoo.so | grep -E 'foo|bar'
+# Output: foo   bar   (bare, no version tag)
+```
+
+**Why:** Without symbol versioning, there is no mechanism to ship a `LIBFOO_2.0` compat fix alongside `LIBFOO_1.0`; apps linked against the versioned library hard-fail when the version information disappears from the `.so`.
+
 ## How to fix
 Always supply a linker version script for public libraries. This enables future
 `LIBFOO_2.0` blocks for compatible evolution and precise control over the public

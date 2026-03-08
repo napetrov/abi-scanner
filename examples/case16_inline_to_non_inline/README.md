@@ -21,6 +21,59 @@ The caller expects `fast_hash` as an imported symbol. But v1 `.so` has **no**
 
 In both scenarios the breakage is subtle and depends on build order.
 
+# Case 16 — Inline → Non-inline (ODR / Symbol Appearance)
+
+## What changes
+
+| Version | Where is `fast_hash`? |
+|---------|----------------------|
+| v1 | Header-only inline — callers have their own copy |
+| v2 | Moved to `.so` — now an exported symbol |
+
+## What breaks at binary level
+
+**Scenario A — Stale callers (compiled with v1 header):**
+The caller has `fast_hash` inlined. The v2 `.so` also has `fast_hash`. At link time,
+the linker sees two definitions — caller's inlined copy and the `.so` export. Normally
+the inline version "wins" locally. But if the implementation diverges between v1
+(inlined) and v2 (in `.so`), results differ. This is an **ODR violation**.
+
+**Scenario B — Fresh callers (compiled with v2 header, linked against v1 `.so`):**
+The caller expects `fast_hash` as an imported symbol. But v1 `.so` has **no**
+`fast_hash` symbol at all. Link fails with "undefined symbol: fast_hash".
+
+In both scenarios the breakage is subtle and depends on build order.
+
+## Real Failure Demo
+
+**Severity: CRITICAL**
+
+**Scenario B:** compile `app` using `v2.hpp` (non-inline declaration), link against `libv1.so` (no `fast_hash` symbol).
+
+```bash
+# Inspect symbol tables
+g++ -shared -fPIC -g v1.cpp -o libv1.so
+g++ -shared -fPIC -g v2.cpp -o libv2.so
+nm --dynamic libv1.so | grep fast_hash || echo "v1: no fast_hash symbol (correct — was inline)"
+# Output: v1: no fast_hash symbol (correct — was inline)
+nm --dynamic libv2.so | grep fast_hash
+# Output: ... T _Z9fast_hashi
+
+# Scenario B: compile with v2.hpp (non-inline) but link v1.so
+g++ -g app.cpp -I. -L. -lv1 -Wl,-rpath,. -o app 2>&1 || true
+# Output:
+# undefined reference to `fast_hash(int)'
+# collect2: error: ld returned 1 exit status
+
+# Fix: link against v2.so — then it works
+g++ -shared -fPIC -g v2.cpp -o libv1.so
+g++ -g app.cpp -I. -L. -lv1 -Wl,-rpath,. -o app
+./app
+# Output: fast_hash(42) = -182847734
+```
+
+**Why:** Moving `fast_hash` from a header inline to the `.so` removes it from the compiler-emitted inline copies; any binary compiled with the new non-inline header that links against the old `.so` gets an undefined symbol error at link or load time.
+
 ## Why abidiff misses it
 
 `abidiff` compares two `.so` files. v1 `.so` has **no** `fast_hash` symbol (it was

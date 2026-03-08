@@ -18,6 +18,59 @@ A caller compiled against v1 headers **allocates** `sizeof(Buffer<int>) = 16` by
 overwriting 8 bytes past the allocated region. This is a classic **stack smash / heap
 corruption** scenario, extremely hard to debug.
 
+# Case 17 — Template Instantiation ABI Change
+
+## What changes
+
+| Version | `Buffer<int>` layout |
+|---------|---------------------|
+| v1 | `{ T* data_; size_t size_; }` → sizeof = 16 bytes (64-bit) |
+| v2 | `{ T* data_; size_t size_; size_t capacity_; }` → sizeof = 24 bytes |
+
+## What breaks at binary level
+
+C++ template classes with explicit instantiations are compiled into the `.so` like
+regular classes. The mangled symbol for `Buffer<int>::Buffer(size_t)` is
+`_ZN6BufferIiEC1Em` — identical in both versions.
+
+A caller compiled against v1 headers **allocates** `sizeof(Buffer<int>) = 16` bytes
+(e.g. on the stack or in a struct). The v2 `.so` constructor writes **24 bytes** —
+overwriting 8 bytes past the allocated region. This is a classic **stack smash / heap
+corruption** scenario, extremely hard to debug.
+
+## Real Failure Demo
+
+**Severity: CRITICAL**
+
+**Scenario:** compile `app` against v1.hpp (`Buffer<int>` = 16 bytes), use placement-new with v2 `.so` constructor which writes 24 bytes.
+
+```bash
+# Step 1: build with v1
+g++ -shared -fPIC -g v1.cpp -I. -o libbuf.so
+g++ -g app.cpp -I. -L. -lbuf -Wl,-rpath,. -o app
+./app
+# Output:
+# sizeof(Buffer<int>) per v1.hpp = 16 bytes
+# canary before = 0xCAFEBABEDEADBEEF
+# buf->size()   = 4
+# canary after  = 0xCAFEBABEDEADBEEF
+# Canary intact (run with ASAN for definitive detection)
+
+# Step 2: swap in v2 (no recompile) — ASAN catches the overflow
+g++ -shared -fPIC -g -fsanitize=address v2.cpp -I. -o libbuf.so
+g++ -g -fsanitize=address app.cpp -I. -L. -lbuf -Wl,-rpath,. -o app_asan
+./app_asan 2>&1 | head -10
+# Output:
+# sizeof(Buffer<int>) per v1.hpp = 16 bytes
+# ==ERROR: AddressSanitizer: stack-buffer-overflow on address ...
+# WRITE of size 8 at ... thread T0
+#   #0 Buffer<int>::Buffer(unsigned long) v2.cpp:5
+#   #1 main app.cpp:24
+# ... 'raw' (line 17) Memory access at offset 48 overflows this variable
+```
+
+**Why:** App allocates 16 bytes for `Buffer<int>` (v1 layout); v2's constructor initializes a `capacity_` field at offset 16 — writing 8 bytes beyond the allocation, detected by ASAN as a stack-buffer-overflow.
+
 ## Why abidiff catches it (with DWARF)
 
 When compiled with `-g`, DWARF records the type layout for `Buffer<int>`. `abidiff`

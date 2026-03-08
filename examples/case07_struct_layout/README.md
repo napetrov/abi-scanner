@@ -30,6 +30,33 @@ abidiff v1.xml v2.xml
 echo "exit: $?"   # → 4
 ```
 
+## Real Failure Demo
+
+**Severity: CRITICAL**
+
+**Scenario:** compile `app` against v1 (struct Point = 8 bytes), swap in v2 `.so` which calls `init_point()` writing 12 bytes.
+
+```bash
+# Step 1: build with v1
+gcc -shared -fPIC -g v1.c -o libfoo.so
+gcc -g app.c -L. -lfoo -Wl,-rpath,. -o app
+./app
+# Output:
+# Before init_point: p={?,?} canary=0xDEADBEEF
+# After  init_point: p={1,2} canary=0xDEADBEEF
+# Canary intact (stack layout may have padded the gap — run with ASAN to confirm)
+# get_x(&p) = 1 (expected 1)
+
+# Step 2: swap in v2 (no recompile)
+gcc -shared -fPIC -g v2.c -o libfoo.so
+./app
+# Output:
+# *** stack smashing detected ***: terminated
+# Aborted (core dumped)
+```
+
+**Why:** v2's `init_point()` writes a third field `z=3` at offset 8, past the 8-byte v1 allocation on the stack — corrupting the stack frame and triggering the compiler's stack-smashing protector.
+
 ## How to fix
 Never add fields to public structs. Use the opaque-pointer (PIMPL) idiom: expose
 `struct Point*` and allocate/free through library functions, so the struct layout
