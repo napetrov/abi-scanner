@@ -1,6 +1,6 @@
 # Case 01: Symbol Removal
 
-**Category:** Symbol API | **Verdict:** 🔴 BREAKING
+**Risk:** 🔴 BREAKING | **Category:** Symbol API | **Verdict:** 🔴 BREAKING
 
 ## What breaks
 Any downstream binary that calls `helper()` will fail to link (or crash at runtime
@@ -28,6 +28,30 @@ abidw --out-file v2.xml libfoo_v2.so
 abidiff v1.xml v2.xml
 echo "exit: $?"   # → 12
 ```
+
+## Real Failure Demo
+
+**Severity: CRITICAL**
+
+**Scenario:** compile `app` against v1, swap in v2 `.so` without recompile.
+
+```bash
+# Step 1: build with v1
+gcc -shared -fPIC -g v1.c -o libfoo.so
+gcc -g app.c -L. -lfoo -Wl,-rpath,. -o app
+./app
+# Output:
+# compute(5) = 10
+# helper(5)  = 6
+
+# Step 2: swap in v2 (no recompile)
+gcc -shared -fPIC -g v2.c -o libfoo.so
+./app
+# Output:
+# ./app: symbol lookup error: ./app: undefined symbol: helper
+```
+
+**Why:** `helper` is called by the binary but removed from v2's dynamic symbol table; the dynamic linker refuses to load the program — immediate hard crash at startup.
 
 ## How to fix
 Never remove a public symbol in a minor/patch release. Deprecate with

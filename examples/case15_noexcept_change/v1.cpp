@@ -18,3 +18,6 @@ void Buffer::reset() noexcept {
     for (int i = 0; i < size_; ++i)
         data_[i] = 0;
 }
+
+extern "C" Buffer* make_buffer() { return new Buffer(); }
+extern "C" void reset_buffer(Buffer* b) { b->reset(); }

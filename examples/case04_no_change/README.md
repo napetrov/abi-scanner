@@ -1,6 +1,6 @@
 # Case 04: No Change
 
-**Category:** Symbol API | **Verdict:** ✅ NO_CHANGE (exit 0)
+**Risk:** 🟢 SAFE | **Category:** Symbol API | **Verdict:** ✅ NO_CHANGE (exit 0)
 
 ## What breaks
 Nothing. Recompiling with the same source produces a bit-for-bit equivalent ABI.
@@ -23,6 +23,24 @@ abidw --out-file v2.xml libfoo_v2.so
 abidiff v1.xml v2.xml
 echo "exit: $?"   # → 0
 ```
+
+## Real Failure Demo
+
+**Severity: INFORMATIONAL (baseline — no failure)**
+
+**Scenario:** compile `app` against v1, run with the same v1 `.so` (no v2 in this case).
+
+```bash
+# Build and run
+gcc -shared -fPIC -g v1.c -o libfoo.so
+gcc -g app.c -L. -lfoo -Wl,-rpath,. -o app
+./app
+# Output:
+# stable_api(42) = 42 (expected 42)
+# OK — baseline: works correctly
+```
+
+**Why:** No ABI change means no misbehavior — this case is the reference "green" baseline showing that identical source produces identical runtime behavior.
 
 ## How to fix
 N/A — this is the ideal state for patch releases.
