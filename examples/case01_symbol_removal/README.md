@@ -1,6 +1,6 @@
 # Case 01: Symbol Removal
 
-**Category:** Symbol API | **Verdict:** 🔴 BREAKING
+**Risk:** 🔴 BREAKING | **Category:** Symbol API | **Verdict:** 🔴 BREAKING
 
 ## What breaks
 Any downstream binary that calls `helper()` will fail to link (or crash at runtime

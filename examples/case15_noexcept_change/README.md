@@ -1,5 +1,8 @@
 # Case 15 — `noexcept` Removed
 
+
+**Risk:** 🚨 SILENT BREAK | **Category:** C++ ABI | **Verdict:** ❌ MISSED (exit 0 — tools blind)
+
 ## What changes
 
 | Version | Signature |

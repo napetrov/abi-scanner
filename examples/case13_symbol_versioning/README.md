@@ -1,6 +1,6 @@
 # Case 13: Symbol Versioning Script
 
-**Category:** ELF/Linker | **Verdict:** 🟡 INFORMATIONAL
+**Risk:** 🟡 BAD PRACTICE | **Category:** ELF/Linker | **Verdict:** 🟡 INFORMATIONAL
 
 ## What breaks
 Without a version script, symbols have no version tag. If you later need to ship a

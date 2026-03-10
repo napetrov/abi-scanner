@@ -1,6 +1,6 @@
 # Case 04: No Change
 
-**Category:** Symbol API | **Verdict:** ✅ NO_CHANGE (exit 0)
+**Risk:** 🟢 SAFE | **Category:** Symbol API | **Verdict:** ✅ NO_CHANGE (exit 0)
 
 ## What breaks
 Nothing. Recompiling with the same source produces a bit-for-bit equivalent ABI.

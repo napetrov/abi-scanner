@@ -1,5 +1,8 @@
 # Case 18 — Dependency ABI Leak
 
+
+**Risk:** 🚨 SILENT BREAK | **Category:** Type Layout | **Verdict:** ❌ .so unchanged, tools miss it
+
 ## What changes
 
 `libfoo` itself is **source-identical** between v1 and v2.

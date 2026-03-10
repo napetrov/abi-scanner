@@ -1,6 +1,6 @@
 # Case 05: Missing SONAME
 
-**Category:** ELF/Linker | **Verdict:** 🟡 INFORMATIONAL
+**Risk:** 🟡 BAD PRACTICE | **Category:** ELF/Linker | **Verdict:** 🟡 INFORMATIONAL
 
 ## What breaks
 Without a SONAME, the dynamic linker records the bare filename (`libfoo.so`) in

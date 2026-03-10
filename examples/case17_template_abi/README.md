@@ -1,5 +1,8 @@
 # Case 17 — Template Instantiation ABI Change
 
+
+**Risk:** 🔴 BREAKING | **Category:** C++ ABI | **Verdict:** 🔴 ABI CHANGE (exit 4, needs DWARF)
+
 ## What changes
 
 | Version | `Buffer<int>` layout |

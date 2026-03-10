@@ -1,6 +1,6 @@
 # Case 12: Function Disappears (Moved to Inline)
 
-**Category:** Symbol API | **Verdict:** 🔴 BREAKING (exit 12)
+**Risk:** 🔴 BREAKING | **Category:** Symbol API | **Verdict:** 🔴 BREAKING (exit 12)
 
 ## What breaks
 Any binary dynamically linked against v1 will fail to load with

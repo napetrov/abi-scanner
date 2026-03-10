@@ -1,5 +1,8 @@
 # Case 16 — Inline → Non-inline (ODR / Symbol Appearance)
 
+
+**Risk:** 🚨 SILENT BREAK | **Category:** C++ ABI | **Verdict:** ❌ ODR violation, partly missed
+
 ## What changes
 
 | Version | Where is `fast_hash`? |

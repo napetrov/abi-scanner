@@ -1,6 +1,6 @@
 # Case 03: Compatible Addition (New Export)
 
-**Category:** Symbol API | **Verdict:** 🟢 COMPATIBLE (exit 4)
+**Risk:** 🟢 SAFE | **Category:** Symbol API | **Verdict:** 🟢 COMPATIBLE (exit 4)
 
 ## What breaks
 Nothing breaks in existing binaries — they never referenced `get_build()`. The exit
