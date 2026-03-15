@@ -5,11 +5,13 @@ Covers:
 - --fail-on {breaking,any,none} exit-code contract for compare
 - --fail-on {violations,none} for validate
 - --output FILE writes JSON/text to disk
+
+Requires: gcc + libabigail (abidw/abidiff) — skipped automatically otherwise.
 """
 import json
+import shutil
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 from abi_helpers import compile_so, make_abi_baseline  # noqa: E402
 
+# Skip entire module if abidw or gcc not available
+pytestmark = pytest.mark.skipif(
+    shutil.which("abidw") is None or shutil.which("gcc") is None,
+    reason="abidw and gcc required for phase3 tests",
+)
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
 
