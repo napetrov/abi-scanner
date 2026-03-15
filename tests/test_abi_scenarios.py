@@ -338,8 +338,8 @@ Buffer::~Buffer() { delete[] data_; }
 void Buffer::reset() { for (int i=0; i<size_; ++i) data_[i]=0; }
 """)
 
-    so_v1 = compile_so(src_v1, tmp_path / "libv1.so", extra=["-std=c++17", "-g"])
-    so_v2 = compile_so(src_v2, tmp_path / "libv2.so", extra=["-std=c++17", "-g"])
+    so_v1 = compile_so(src_v1, tmp_path / "libv1.so", extra_flags=["-std=c++17", "-g"])
+    so_v2 = compile_so(src_v2, tmp_path / "libv2.so", extra_flags=["-std=c++17", "-g"])
 
     def has_reset(so):
         r = subprocess.run(["nm", "--dynamic", str(so)],
@@ -370,8 +370,8 @@ int fast_hash(int x) {
 }
 """)
 
-    so_v1 = compile_so(src_v1, tmp_path / "libv1.so", extra=["-std=c++17"])
-    so_v2 = compile_so(src_v2, tmp_path / "libv2.so", extra=["-std=c++17"])
+    so_v1 = compile_so(src_v1, tmp_path / "libv1.so", extra_flags=["-std=c++17"])
+    so_v2 = compile_so(src_v2, tmp_path / "libv2.so", extra_flags=["-std=c++17"])
 
     def has_fast_hash(so):
         r = subprocess.run(["nm", "--dynamic", "--defined-only", str(so)],
@@ -422,12 +422,12 @@ struct Buffer {
 template struct Buffer<int>;
 """)
 
-    so_v1 = compile_so(src_v1, tmp_path / "libv1.so", extra=["-std=c++17", "-g"])
-    so_v2 = compile_so(src_v2, tmp_path / "libv2.so", extra=["-std=c++17", "-g"])
+    so_v1 = compile_so_cpp(src_v1, tmp_path / "libv1.so", extra_flags=["-std=c++17", "-g"])
+    so_v2 = compile_so_cpp(src_v2, tmp_path / "libv2.so", extra_flags=["-std=c++17", "-g"])
 
     # Both .so files export Buffer<int> constructor
     def has_buffer_int(so):
-        r = subprocess.run(["nm", "--dynamic", str(so)],
+        r = subprocess.run(["nm", "-C", "--dynamic", str(so)],
                            capture_output=True, text=True)
         return any("Buffer" in ln and "int" in ln for ln in r.stdout.splitlines())
 
@@ -435,8 +435,8 @@ template struct Buffer<int>;
     assert has_buffer_int(so_v2), "v2 must export Buffer<int>"
 
     # abidiff with DWARF should report a change
-    result = run_abidiff(so_v1, so_v2, tmp_path)
-    assert result.returncode != 0, (
+    exit_code, actual_verdict, _stdout = _run_abi_check(tmp_path, so_v1, so_v2)
+    assert exit_code != 0, (
         "abidiff should detect Buffer<int> layout change with DWARF present"
     )
 

@@ -1,6 +1,6 @@
 # Case 10: Return Type Change
 
-**Category:** Symbol API | **Verdict:** 🟡 ABI CHANGE (exit 4)
+**Risk:** 🔴 BREAKING | **Category:** Symbol API | **Verdict:** 🔴 ABI CHANGE (exit 4)
 
 > **Note on abidiff 2.4.0:** Returns exit **4**. Semantically breaking — on
 > x86-64, `int` is returned in the lower 32 bits of `rax`; `long` uses all 64 bits.
@@ -28,6 +28,33 @@ abidw --out-file v2.xml libfoo_v2.so
 abidiff v1.xml v2.xml
 echo "exit: $?"   # → 4
 ```
+
+## Real Failure Demo
+
+**Severity: CRITICAL**
+
+**Scenario:** compile `app` against v1 (`get_count` returns `int`), swap in v2 `.so` which returns `long 3000000000`.
+
+```bash
+# Step 1: build with v1
+gcc -shared -fPIC -g v1.c -o libfoo.so
+gcc -g app.c -L. -lfoo -Wl,-rpath,. -o app
+./app
+# Output:
+# Expected: 42 (v1) or 3000000000 (v2 demo)
+# Got (as int): 42
+# OK — v1 baseline
+
+# Step 2: swap in v2 (no recompile)
+gcc -shared -fPIC -g v2.c -o libfoo.so
+./app
+# Output:
+# Expected: 42 (v1) or 3000000000 (v2 demo)
+# Got (as int): -1294967296
+# TRUNCATION: v2 returned 3000000000L, int reads only low 32 bits → -1294967296
+```
+
+**Why:** On x86-64, `long` is returned in the full 64-bit `rax` register; old code compiled against `int` zero-extends only the lower 32 bits of `rax` — silently reading a wrong, negative truncated value.
 
 ## How to fix
 Add a new function with the new return type (e.g., `get_count_ex()` returning `long`)

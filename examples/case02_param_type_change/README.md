@@ -1,6 +1,6 @@
 # Case 02: Parameter Type Change
 
-**Category:** Symbol API | **Verdict:** 🟡 ABI CHANGE (exit 4)
+**Risk:** 🔴 BREAKING | **Category:** Symbol API | **Verdict:** 🔴 ABI CHANGE (exit 4)
 
 > **Note on abidiff 2.4.0:** libabigail classifies parameter type changes as
 > "indirect sub-type changes" with exit code **4** (ABI change detected, not
@@ -31,6 +31,32 @@ abidw --out-file v2.xml libfoo_v2.so
 abidiff v1.xml v2.xml
 echo "exit: $?"   # → 4
 ```
+
+## Real Failure Demo
+
+**Severity: CRITICAL**
+
+**Scenario:** compile `app` against v1, swap in v2 `.so` without recompile.
+
+```bash
+# Step 1: build with v1
+gcc -shared -fPIC -g v1.c -o libfoo.so
+gcc -g app.c -L. -lfoo -Wl,-rpath,. -o app
+./app
+# Output:
+# Expected: 7.000000
+# Got:      7.000000
+
+# Step 2: swap in v2 (no recompile)
+gcc -shared -fPIC -g v2.c -o libfoo.so
+./app
+# Output:
+# WRONG RESULT — ABI mismatch (int vs double argument passing)
+# Expected: 7.000000
+# Got:      3.000000
+```
+
+**Why:** With v1 the caller passes `int 3` in a general-purpose register; v2 expects a `double` in an XMM register, so it reads an uninitialized XMM value — silently producing the wrong result with no error or signal.
 
 ## How to fix
 Introduce a new function with the desired signature alongside the old one. Keep the

@@ -28,28 +28,58 @@ embedded firmware all depend on ABI stability for safe rolling upgrades.
 
 ---
 
+## Case Categories
+
+Cases are grouped into four risk levels:
+
+| Level | Meaning |
+|-------|---------|
+| 🔴 **BREAKING** | Binary-incompatible change — pre-built consumers crash or fail to link. Tools detect. |
+| 🚨 **SILENT BREAK** | Binary-incompatible but invisible to standard tools — most dangerous. |
+| 🟡 **BAD PRACTICE** | Not immediately breaking, but violates ELF/linker hygiene or release policy. |
+| 🟢 **SAFE** | How to evolve a library correctly without breaking consumers. |
+
+---
+
 ## Case Index
 
-| # | Case | Category | abidiff exit | Root cause |
-|---|------|----------|-------------|-----------|
+### 🔴 BREAKING — Binary-incompatible changes (tools detect)
+
+| # | Case | Sub-category | abidiff exit | Root cause |
+|---|------|-------------|-------------|-----------|
 | [01](case01_symbol_removal/README.md) | Symbol Removal | Symbol API | 12 🔴 | Public function deleted from .so |
-| [02](case02_param_type_change/README.md) | Parameter Type Change | Symbol API | 4 🟡 | Param type widened, callers pass wrong register |
-| [03](case03_compat_addition/README.md) | Compatible Addition | Symbol API | 4 🟢 | New export added, existing callers unaffected |
-| [04](case04_no_change/README.md) | No Change | Symbol API | 0 ✅ | Identical binary — baseline |
+| [02](case02_param_type_change/README.md) | Parameter Type Change | Symbol API | 4 🔴 | Param type widened, callers pass wrong register |
+| [07](case07_struct_layout/README.md) | Struct Layout Change | Type Layout | 4 🔴 | Field added, sizeof grows, callers undersize |
+| [08](case08_enum_value_change/README.md) | Enum Value Change | Type Layout | 4 🔴 | Value inserted mid-enum, existing constants shift |
+| [09](case09_cpp_vtable/README.md) | C++ Vtable Change | C++ ABI | 4 🔴 | Virtual method inserted, vtable offsets shift |
+| [10](case10_return_type/README.md) | Return Type Change | Symbol API | 4 🔴 | Return type widened, callers read truncated value |
+| [11](case11_global_var_type/README.md) | Global Variable Type | Type Layout | 4 🔴 | Global var type widened, symbol size changes |
+| [12](case12_function_removed/README.md) | Function Disappears | Symbol API | 12 🔴 | Function moved to inline, vanishes from .so |
+| [14](case14_cpp_class_size/README.md) | C++ Class Size Change | C++ ABI | 4 🔴 | Private member grows, sizeof(class) changes |
+| [17](case17_template_abi/README.md) | Template Layout Change | C++ ABI | 4 🔴 | Explicit-instantiated template grows in size |
+
+### 🚨 SILENT BREAK — Binary-incompatible but tools miss it
+
+| # | Case | Sub-category | abidiff exit | Root cause |
+|---|------|-------------|-------------|-----------|
+| [15](case15_noexcept_change/README.md) | noexcept Removed | C++ ABI | 0 ❌ | noexcept guarantee dropped; DWARF-invisible |
+| [16](case16_inline_to_non_inline/README.md) | Inline → Non-inline | C++ ABI | — ❌ | ODR violation; symbol appears but semantics changed |
+| [18](case18_dependency_leak/README.md) | Dependency ABI Leak | Type Layout | — ❌ | Third-party type in public header changes layout; .so unchanged |
+
+### 🟡 BAD PRACTICE — ELF/linker hygiene violations
+
+| # | Case | Sub-category | abidiff exit | Root cause |
+|---|------|-------------|-------------|-----------|
 | [05](case05_soname/README.md) | Missing SONAME | ELF/Linker | — 🟡 | Library built without -Wl,-soname |
 | [06](case06_visibility/README.md) | Visibility Leak | Visibility | — 🟡 | Internal symbols unintentionally exported |
-| [07](case07_struct_layout/README.md) | Struct Layout Change | Type Layout | 4 🟡 | Field added, sizeof grows, callers undersize |
-| [08](case08_enum_value_change/README.md) | Enum Value Change | Type Layout | 4 🟡 | Value inserted mid-enum, existing constants shift |
-| [09](case09_cpp_vtable/README.md) | C++ Vtable Change | C++ ABI | 4 🟡 | Virtual method inserted, vtable offsets shift |
-| [10](case10_return_type/README.md) | Return Type Change | Symbol API | 4 🟡 | Return type widened, callers read truncated value |
-| [11](case11_global_var_type/README.md) | Global Variable Type | Type Layout | 4 🟡 | Global var type widened, symbol size changes |
-| [12](case12_function_removed/README.md) | Function Disappears | Symbol API | 12 🔴 | Function moved to inline, vanishes from .so |
 | [13](case13_symbol_versioning/README.md) | Symbol Versioning | ELF/Linker | — 🟡 | No version script → no `@@VER` on symbols |
-| [14](case14_cpp_class_size/README.md) | C++ Class Size Change | C++ ABI | 4 🟡 | Private member grows, sizeof(class) changes |
-| [15](case15_noexcept_change/README.md) | noexcept Removed | C++ ABI | 0 ❌ | noexcept guarantee dropped; DWARF-invisible |
-| [16](case16_inline_to_non_inline/README.md) | Inline → Non-inline | C++ ABI | — ⚠️ | ODR violation; symbol appears in v2 .so |
-| [17](case17_template_abi/README.md) | Template Layout Change | C++ ABI | 4 🟡 | Explicit-instantiated template grows in size |
-| [18](case18_dependency_leak/README.md) | Dependency ABI Leak | Type Layout | — ⚠️ | Third-party type in public header changes layout |
+
+### 🟢 SAFE — How to evolve a library without breaking consumers
+
+| # | Case | Sub-category | abidiff exit | Root cause |
+|---|------|-------------|-------------|-----------|
+| [03](case03_compat_addition/README.md) | Compatible Addition | Symbol API | 4 🟢 | New export added, existing callers unaffected |
+| [04](case04_no_change/README.md) | No Change | Symbol API | 0 ✅ | Identical binary — baseline |
 
 ---
 

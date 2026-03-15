@@ -1,6 +1,6 @@
 # Case 06: Symbol Visibility Leak
 
-**Category:** Visibility | **Verdict:** 🟡 INFORMATIONAL
+**Risk:** 🟡 BAD PRACTICE | **Category:** Visibility | **Verdict:** 🟡 INFORMATIONAL
 
 ## What breaks
 Every symbol compiled without `-fvisibility=hidden` becomes part of the public ABI
@@ -30,6 +30,27 @@ gcc -shared -fPIC bad.c  -o libbad.so
 nm --dynamic --defined-only libgood.so  # only public_api
 nm --dynamic --defined-only libbad.so   # public_api + internal_helper + another_impl
 ```
+
+## Real Failure Demo
+
+**Severity: BAD PRACTICE**
+
+**Scenario:** use `dlopen` + `dlsym` to probe whether `internal_helper` leaks out of each library.
+
+```bash
+# Build both libraries
+gcc -shared -fPIC -fvisibility=hidden -g good.c -o libgood.so
+gcc -shared -fPIC -g bad.c -o libbad.so
+
+# Build and run the probe app
+gcc -g app.c -o app -ldl
+./app
+# Output:
+# libbad.so:  internal_helper(3) = 6  <-- LEAKED (should be private!)
+# libgood.so: internal_helper not accessible (correct)
+```
+
+**Why:** Without `-fvisibility=hidden`, every function becomes part of the dynamic symbol table — accidental consumers can call and depend on internal helpers, turning any future refactor into an ABI break.
 
 ## How to fix
 Add `-fvisibility=hidden` to the build flags and annotate every intended public
